@@ -2,12 +2,12 @@ import {
   addAsset, appendClip, createProject, locateClip, moveClip, parseProject,
   removeCaption, removeClip, rippleDeleteRange, setCaption, sliceProject, splitClip,
   timelineDuration, trimClip, trimClipToPlayhead,
-} from './project.mjs';
+} from './project.mjs?v=2';
 import {captionAt, drawFrame} from './render.mjs';
 import {cueVideo, inspectMedia} from './media.mjs';
-import {exportVideo, getExportFormats} from './export.mjs';
-import {createPreviewProxy, inspectPreviewMedia, isLightPreviewSource} from './proxy.mjs';
-import {mountTimeline} from './timeline.mjs';
+import {exportVideo, getExportFormats} from './export.mjs?v=2';
+import {createPreviewProxy, inspectPreviewMedia, isLightPreviewSource} from './proxy.mjs?v=2';
+import {mountTimeline} from './timeline.mjs?v=2';
 
 const $ = id => document.getElementById(id);
 const sources = new Map();

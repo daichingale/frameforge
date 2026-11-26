@@ -1,4 +1,4 @@
-import {exportVideo, getExportFormats} from './export.mjs';
+import {exportVideo, getExportFormats} from './export.mjs?v=2';
 import {mediaEvent} from './media.mjs';
 
 const MAX_LONG_EDGE = 640;
