@@ -1,11 +1,11 @@
-import { captionAt, drawFrame } from './render.mjs'
+import { captionAt, drawFrame } from './render.mjs?v=3'
 
 const mimeTypes = {
   mp4: ['video/mp4;codecs=avc1.42001f,mp4a.40.2', 'video/mp4'],
   webm: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'],
 }
 
-function supportedMimeType(format) {
+export function supportedMimeType(format) {
   if (!Object.hasOwn(mimeTypes, format)) return undefined
   return mimeTypes[format].find(type => globalThis.MediaRecorder?.isTypeSupported(type))
 }
@@ -22,7 +22,7 @@ function checkAbort(signal) {
   if (signal.aborted) throw abortReason(signal)
 }
 
-function waitForAction(signal, timeoutMessage, subscribe, timeout = 15000) {
+export function waitForAction(signal, timeoutMessage, subscribe, timeout = 15000) {
   checkAbort(signal)
   return new Promise((resolve, reject) => {
     const cleanup = []

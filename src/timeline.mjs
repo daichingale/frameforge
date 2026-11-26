@@ -43,7 +43,7 @@ function nearest(time, points, window) {
 }
 
 export function mountTimeline({
-  element, onSelect, onSeek, onTrim, onMove, onTrimPreview, onCaptionSelect,
+  element, onSelect, onSeek, onTrim, onMove, onTrimPreview, onCaptionSelect, onAudioMove, onAudioTrim,
 }) {
   element.classList.add('ff-timeline');
   const stage = node('div', 'ff-timeline-stage');
@@ -56,6 +56,9 @@ export function mountTimeline({
   marks.setAttribute('aria-hidden', 'true');
   const clipsLane = node('div', 'ff-timeline-clips', '動画クリップ');
   const captionsLane = node('div', 'ff-timeline-captions', '字幕の区間');
+  const audioLane = node('div', 'ff-timeline-audio', '音声トラック');
+  const audioLabel = node('div', 'ff-timeline-audio-label');
+  audioLabel.textContent = '音声';
   const playhead = node('span', 'ff-timeline-head');
   const range = node('span', 'ff-timeline-range');
   const rangeStartMark = node('span', 'ff-timeline-range-point');
@@ -66,10 +69,12 @@ export function mountTimeline({
     decoration.setAttribute('aria-hidden', 'true');
   }
   ruler.append(marks);
-  stage.append(ruler, clipsLane, captionsLane, range, rangeStartMark, rangeEndMark, dropLine, playhead, dragReadout);
+  stage.append(ruler, clipsLane, audioLane, captionsLane, range, rangeStartMark, rangeEndMark, dropLine, playhead, dragReadout);
   element.replaceChildren(stage);
 
   let entries = [];
+  let videoEntries = [];
+  let boundaries = [0];
   let duration = 0;
   let zoom = DEFAULT_ZOOM;
   let scale = zoom;
@@ -141,6 +146,10 @@ export function mountTimeline({
     item.classList.toggle('ff-timeline-tiny', pixels(length) < 26);
   }
 
+  function setStageWidth(seconds) {
+    stage.style.width = `${clamp(Math.ceil(pixels(seconds)) + 1, 1, MAX_WIDTH)}px`;
+  }
+
   function layout(anchor = false) {
     const oldScale = scale;
     const first = element.scrollLeft / oldScale;
@@ -148,7 +157,7 @@ export function mountTimeline({
     const width = Math.max(1, element.clientWidth - 2);
     const requested = fitWidth && duration ? width / duration : zoom;
     scale = duration ? Math.min(requested, MAX_WIDTH / duration) : requested;
-    stage.style.width = `${Math.max(1, Math.ceil(pixels(duration)) + 1)}px`;
+    setStageWidth(duration);
     ruler.setAttribute('aria-valuemax', String(duration));
     for (const entry of entries) formatClip(entry.item, entry);
     for (const item of captionsLane.children) {
@@ -172,8 +181,10 @@ export function mountTimeline({
     return handle;
   }
 
-  function clipItem(clip, asset, selected, linked) {
+  function clipItem(clip, asset, selected, linked, audio = false) {
     const item = node('div', 'clip-block ff-timeline-clip');
+    if (audio) item.classList.add('ff-timeline-audio-clip');
+    if (asset.kind === 'image') item.classList.add('ff-timeline-image-clip');
     item.dataset.clipId = clip.id;
     item.classList.toggle('selected', selected);
     item.classList.toggle('missing', !linked);
@@ -233,16 +244,34 @@ export function mountTimeline({
     const focusEdge = active?.dataset.edge;
     const focusCaption = active?.dataset.captionId;
     clearInteraction();
-    duration = 0;
+    let visualEnd = 0;
     const assets = new Map(project.assets.map(asset => [asset.id, asset]));
-    entries = project.clips.map(clip => {
-      const start = duration;
-      duration += clip.out - clip.in;
+    videoEntries = project.clips.map(clip => {
+      const start = visualEnd;
+      visualEnd += clip.out - clip.in;
       const asset = assets.get(clip.assetId);
       const item = clipItem(clip, asset, clip.id === selectedId, sources.has(clip.assetId));
-      return {clip, asset, item, start, end: duration};
+      return {clip, asset, item, start, end: visualEnd};
     });
-    clipsLane.replaceChildren(...entries.map(entry => entry.item));
+    const rowEnds = [];
+    const audioEntries = [...(project.audioClips ?? [])].sort((a, b) => a.start - b.start).map(clip => {
+      const {start} = clip;
+      const end = start + (clip.out - clip.in);
+      const asset = assets.get(clip.assetId);
+      const item = clipItem(clip, asset, clip.id === selectedId, sources.has(clip.assetId), true);
+      const free = rowEnds.findIndex(rowEnd => rowEnd <= start + 1e-9);
+      const row = free === -1 ? rowEnds.length : free;
+      rowEnds[row] = end;
+      item.style.top = `${23 + row * 35}px`;
+      return {clip, asset, item, start, end, audio: true};
+    });
+    duration = audioEntries.reduce((end, entry) => Math.max(end, entry.end), visualEnd);
+    entries = [...videoEntries, ...audioEntries];
+    boundaries = [0, ...videoEntries.map(entry => entry.end), ...audioEntries.flatMap(entry => [entry.start, entry.end])];
+    clipsLane.hidden = !videoEntries.length;
+    clipsLane.replaceChildren(...videoEntries.map(entry => entry.item));
+    audioLane.style.height = `${24 + Math.max(1, rowEnds.length) * 35}px`;
+    audioLane.replaceChildren(audioLabel, ...audioEntries.map(entry => entry.item));
     rebuildCaptions(project.captions);
     layout();
     if (focusClip) {
@@ -260,8 +289,7 @@ export function mountTimeline({
 
   function cue(time, shouldSnap) {
     const positionTime = clamp(time, 0, duration);
-    const snapped = shouldSnap ? nearest(positionTime, [0, ...entries.map(entry => entry.end)], snapWindow()) : positionTime;
-    onSeek(snapped);
+    return shouldSnap ? nearest(positionTime, boundaries, snapWindow()) : positionTime;
   }
 
   function limits(entry, edge) {
@@ -299,8 +327,9 @@ export function mountTimeline({
     const {entry, edge, index} = drag;
     const [start, end] = trimmed(entry, edge, delta, !drag.alt);
     const sizeDelta = end - start - (entry.end - entry.start);
+    setStageWidth(Math.max(duration, videoEntries.at(-1).end + sizeDelta));
     formatClip(entry.item, entry, entry.start, end - start);
-    for (const next of entries.slice(index + 1)) formatClip(next.item, next, next.start + sizeDelta);
+    for (const next of videoEntries.slice(index + 1)) formatClip(next.item, next, next.start + sizeDelta);
     updateReadout(edge === 'in' ? entry.start : entry.end + sizeDelta, `素材 ${stamp(edge === 'in' ? start : end, 3)}`);
     if (drag.inPoint === start && drag.outPoint === end) return;
     drag.inPoint = start;
@@ -311,19 +340,65 @@ export function mountTimeline({
   function updateMove(drag, delta) {
     const mid = (drag.entry.start + drag.entry.end) / 2 + delta;
     let target = drag.index;
-    while (target < entries.length - 1 && mid >= (entries[target + 1].start + entries[target + 1].end) / 2) target++;
-    while (target > 0 && mid < (entries[target - 1].start + entries[target - 1].end) / 2) target--;
+    while (target < videoEntries.length - 1 && mid >= (videoEntries[target + 1].start + videoEntries[target + 1].end) / 2) target++;
+    while (target > 0 && mid < (videoEntries[target - 1].start + videoEntries[target - 1].end) / 2) target--;
     drag.target = target;
     drag.entry.item.style.transform = `translateX(${pixels(delta)}px)`;
     dropLine.hidden = target === drag.index;
-    if (!dropLine.hidden) position(dropLine, target > drag.index ? entries[target].end : entries[target].start);
+    if (!dropLine.hidden) position(dropLine, target > drag.index ? videoEntries[target].end : videoEntries[target].start);
+  }
+
+  function audioEdit(entry, edge, delta, snap) {
+    const {clip} = entry;
+    const span = clip.out - clip.in;
+    const minimum = Math.min(MIN_CLIP, entry.asset.duration, span);
+    const points = snap ? [0, ...entries.filter(other => other !== entry).flatMap(other => [other.start, other.end])] : [];
+    if (edge === 'in') {
+      const lower = Math.max(0, entry.start - clip.in);
+      const upper = entry.end - minimum;
+      const start = nearest(clamp(entry.start + delta, lower, upper), points.filter(point => point >= lower && point <= upper), snapWindow());
+      return {start, in: clamp(clip.in + (start - entry.start), 0, clip.out - minimum), out: clip.out};
+    }
+    if (edge === 'out') {
+      const lower = entry.start + minimum;
+      const upper = entry.start + entry.asset.duration - clip.in;
+      const end = nearest(clamp(entry.end + delta, lower, upper), points.filter(point => point >= lower && point <= upper), snapWindow());
+      return {start: entry.start, in: clip.in, out: clamp(clip.in + (end - entry.start), clip.in + minimum, entry.asset.duration)};
+    }
+    const requested = Math.max(0, entry.start + delta);
+    const candidates = points.flatMap(point => point >= span ? [point, point - span] : [point]);
+    return {start: nearest(requested, candidates, snapWindow()), in: clip.in, out: clip.out};
+  }
+
+  function updateAudio(drag, delta) {
+    const {entry, edge} = drag;
+    const next = audioEdit(entry, edge, delta, !drag.alt);
+    const end = next.start + (next.out - next.in);
+    drag.audioEdit = next;
+    setStageWidth(Math.max(duration, end));
+    formatClip(entry.item, entry, next.start, next.out - next.in);
+    const marker = edge === 'out' ? end : next.start;
+    updateReadout(marker, stamp(marker, 3));
+  }
+
+  function commitAudio(entry, edge, next) {
+    const {clip} = entry;
+    if (edge && (clip.start !== next.start || clip.in !== next.in || clip.out !== next.out)) {
+      onAudioTrim?.(clip.id, next);
+    } else if (!edge && clip.start !== next.start) {
+      onAudioMove?.(clip.id, next.start);
+    }
   }
 
   function paintInteraction(drag) {
     drag.frame = 0;
     if (interaction !== drag) return;
     if (drag.kind === 'seek') {
-      cue(pointerTime(drag.clientX), !drag.alt);
+      const time = cue(pointerTime(drag.clientX), !drag.alt);
+      if (time !== drag.seekTime) {
+        drag.seekTime = time;
+        onSeek(time);
+      }
       return;
     }
     if (!drag.moved) return;
@@ -338,9 +413,12 @@ export function mountTimeline({
       element.scrollLeft += direction * clamp((30 - edgeGap) * 0.33, 1, 18);
     }
     const delta = pointerTime(drag.clientX) - drag.startTime;
-    if (drag.edge) updateTrim(drag, delta);
+    if (drag.entry.audio) updateAudio(drag, delta);
+    else if (drag.edge) updateTrim(drag, delta);
     else updateMove(drag, delta);
-    if (canScroll && element.scrollLeft !== before) {
+    const extendedRight = (drag.entry.audio || drag.edge === 'out') && right < 30
+      && !canScroll && element.scrollLeft + element.clientWidth < element.scrollWidth;
+    if (extendedRight || (canScroll && element.scrollLeft !== before)) {
       drag.frame = requestAnimationFrame(() => paintInteraction(drag));
     }
   }
@@ -351,6 +429,7 @@ export function mountTimeline({
     interaction = null;
     if (drag.frame) cancelAnimationFrame(drag.frame);
     if (drag.entry) {
+      setStageWidth(duration);
       drag.entry.item.classList.remove('ff-timeline-dragging');
       drag.entry.item.style.transform = '';
       for (const entry of entries.slice(drag.index)) formatClip(entry.item, entry);
@@ -384,7 +463,10 @@ export function mountTimeline({
     };
     event.preventDefault();
     element.setPointerCapture(event.pointerId);
-    if (!entry) paintInteraction(interaction);
+    if (!entry) {
+      ruler.focus({preventScroll: true});
+      paintInteraction(interaction);
+    }
   }
 
   function movePointer(event) {
@@ -412,6 +494,10 @@ export function mountTimeline({
     if (event.pointerType !== 'touch') entry.item.firstElementChild.focus({preventScroll: true});
     onSelect(entry.clip.id);
     if (!moved) return;
+    if (entry.audio) {
+      commitAudio(entry, edge, drag.audioEdit);
+      return;
+    }
     if (edge && (entry.clip.in !== inPoint || entry.clip.out !== outPoint)) onTrim(entry.clip.id, inPoint, outPoint);
     if (!edge && target !== index) onMove(entry.clip.id, target);
   }
@@ -423,9 +509,11 @@ export function mountTimeline({
     } else if (ruler.contains(event.target)) {
       // Mouse scrubbing is already handled by the captured pointer. A touch
       // tap seeks, while a horizontal swipe scrolls the long timeline.
-      if (event.pointerType === 'touch') cue(pointerTime(event.clientX), true);
-    } else if (event.target === clipsLane || event.target === captionsLane) {
-      cue(pointerTime(event.clientX), !event.altKey);
+      if (event.pointerType === 'touch' || event.sourceCapabilities?.firesTouchEvents) {
+        onSeek(cue(pointerTime(event.clientX), true));
+      }
+    } else if (event.target === clipsLane || event.target === captionsLane || event.target === audioLane) {
+      onSeek(cue(pointerTime(event.clientX), !event.altKey));
     }
   }
 
@@ -436,7 +524,7 @@ export function mountTimeline({
       const time = event.key === 'Home' ? 0 : event.key === 'End' ? duration : currentTime + delta * step;
       if (!delta && !['Home', 'End'].includes(event.key)) return;
       event.preventDefault();
-      cue(time, false);
+      onSeek(cue(time, false));
       const left = pixels(clamp(time, 0, duration));
       if (left < element.scrollLeft || left > element.scrollLeft + element.clientWidth - 8) {
         element.scrollLeft = left - element.clientWidth / 2;
@@ -451,11 +539,15 @@ export function mountTimeline({
     event.preventDefault();
     const entry = entries[index];
     onSelect(entry.clip.id);
+    if (entry.audio) {
+      commitAudio(entry, edge, audioEdit(entry, edge, delta * step, false));
+      return;
+    }
     if (edge) {
       const [start, end] = trimmed(entry, edge, delta * step, false);
       if (entry.clip.in !== start || entry.clip.out !== end) onTrim(entry.clip.id, start, end);
     } else {
-      const target = clamp(index + delta, 0, entries.length - 1);
+      const target = clamp(index + delta, 0, videoEntries.length - 1);
       if (target !== index) onMove(entry.clip.id, target);
     }
   }

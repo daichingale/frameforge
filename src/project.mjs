@@ -2,7 +2,11 @@ const MIN_CLIP_DURATION = 0.05;
 const TIME_TOLERANCE = 1e-9;
 
 export function createProject() {
-  return { version: 1, assets: [], clips: [], captions: [] };
+  return { version: 1, assets: [], clips: [], captions: [], audioClips: [] };
+}
+
+export function assetKind(asset) {
+  return asset?.kind ?? 'video';
 }
 
 function requireRecord(value, message) {
@@ -17,12 +21,14 @@ function hasText(value) {
 
 function validateAsset(asset) {
   requireRecord(asset, '素材の情報が正しくありません。');
-  const { id, name, duration, size, lastModified } = asset;
+  const { id, name, duration, size, lastModified, kind } = asset;
   if (!hasText(id) || !hasText(name) || !Number.isFinite(duration) || duration <= 0
-      || !Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(lastModified)) {
+      || !Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(lastModified)
+      || (kind !== undefined && !['video', 'image', 'audio'].includes(kind))) {
     throw new Error('素材の情報が正しくありません。');
   }
-  return { id, name, duration, size, lastModified };
+  const fields = { id, name, duration, size, lastModified };
+  return kind === undefined ? fields : { ...fields, kind };
 }
 
 function validateClip(clip, asset) {
@@ -42,6 +48,22 @@ function validateClipEdit(clip, asset) {
   const tolerance = Math.min(TIME_TOLERANCE, minimum * 1e-6);
   if (validated.out - validated.in < minimum - tolerance) {
     throw new Error('クリップの長さは0.05秒以上にしてください。');
+  }
+  return validated;
+}
+
+export function audioClipEnd(clip) {
+  return clip.start + (clip.out - clip.in);
+}
+
+function validateAudioClip(clip, asset) {
+  if (assetKind(asset) !== 'audio') throw new Error('音声素材が見つかりません。');
+  const source = validateClip(clip, asset);
+  const { start, gain } = clip;
+  const validated = { ...source, start, gain };
+  if (!Number.isFinite(start) || start < 0 || !Number.isFinite(audioClipEnd(validated))
+      || audioClipEnd(validated) <= start || !Number.isFinite(gain) || gain < 0 || gain > 2) {
+    throw new Error('音声の配置時刻は0秒以上、音量は0〜200%で指定してください。');
   }
   return validated;
 }
@@ -71,16 +93,28 @@ export function parseProject(json) {
   }
   const assets = input.assets.map(validateAsset);
   const assetIndex = uniqueById(assets);
-  const clips = input.clips.map(clip => validateClip(clip, assetIndex.get(clip?.assetId)));
+  const clips = input.clips.map(clip => {
+    const asset = assetIndex.get(clip?.assetId);
+    if (assetKind(asset) === 'audio') throw new Error('音声素材は音声トラックに配置してください。');
+    return validateClip(clip, asset);
+  });
+  if (input.audioClips !== undefined && !Array.isArray(input.audioClips)) {
+    throw new Error('音声トラックのデータが正しくありません。');
+  }
+  const audioClips = (input.audioClips ?? []).map(clip => validateAudioClip(clip, assetIndex.get(clip?.assetId)));
   const captions = input.captions.map(validateCaption);
-  uniqueById(clips);
+  uniqueById([...clips, ...audioClips]);
   uniqueById(captions);
-  const project = { version: 1, assets, clips, captions };
+  const project = { version: 1, assets, clips, captions, audioClips };
   if (!Number.isFinite(timelineDuration(project))) throw new Error('タイムラインが長すぎます。');
   return project;
 }
 
 export function timelineDuration(project) {
+  return (project.audioClips ?? []).reduce((duration, clip) => Math.max(duration, audioClipEnd(clip)), visualDuration(project));
+}
+
+export function visualDuration(project) {
   return project.clips.reduce((sum, clip) => sum + (clip.out - clip.in), 0);
 }
 
@@ -113,7 +147,18 @@ export function sliceProject(project, start, end) {
       start: Math.max(caption.start, start) - start,
       end: Math.min(caption.end, end) - start,
     }));
-  return { ...project, clips, captions };
+  const audioClips = (project.audioClips ?? []).flatMap(clip => {
+    const clipEnd = audioClipEnd(clip);
+    if (clipEnd <= start || end <= clip.start) return [];
+    const overlapStart = Math.max(clip.start, start);
+    return [{
+      ...clip,
+      start: overlapStart - start,
+      in: clip.start < start ? clip.in + (start - clip.start) : clip.in,
+      out: end < clipEnd ? clip.in + (end - clip.start) : clip.out,
+    }];
+  });
+  return { ...project, clips, captions, audioClips };
 }
 
 function boundaryTolerance(time) {
@@ -156,11 +201,31 @@ export function rippleDeleteRange(project, start, end) {
     if (time <= rangeEnd) return start;
     return start + (time - rangeEnd);
   };
-  const captions = clips.length === 0 ? [] : project.captions
+  const audioClips = (project.audioClips ?? []).flatMap(clip => {
+    const clipEnd = audioClipEnd(clip);
+    const tolerance = Math.min(boundaryTolerance(clipEnd), (clip.out - clip.in) / 2);
+    if (clipEnd - start <= tolerance) return [clip];
+    if (rangeEnd - clip.start <= tolerance) return [{ ...clip, start: shift(clip.start) }];
+    const fragments = [];
+    const leftOut = clip.in + (start - clip.start);
+    const rightIn = clip.in + (rangeEnd - clip.start);
+    const keepLeft = start - clip.start > tolerance && leftOut > clip.in;
+    if (keepLeft) fragments.push({ ...clip, out: leftOut });
+    if (clipEnd - rangeEnd > tolerance && rightIn < clip.out) {
+      fragments.push({
+        ...clip,
+        id: keepLeft ? crypto.randomUUID() : clip.id,
+        start,
+        in: rightIn,
+      });
+    }
+    return fragments;
+  });
+  const captions = clips.length === 0 && audioClips.length === 0 ? [] : project.captions
     .map(caption => ({ ...caption, start: shift(caption.start), end: shift(caption.end) }))
     .filter(caption => caption.end > caption.start);
 
-  return { ...project, clips, captions };
+  return { ...project, clips, captions, audioClips };
 }
 
 export function locateClip(project, time) {
@@ -171,6 +236,7 @@ export function locateClip(project, time) {
   for (const [index, clip] of project.clips.entries()) {
     const end = start + (clip.out - clip.in);
     const last = index === project.clips.length - 1;
+    if (last && position > end && (project.audioClips ?? []).some(item => audioClipEnd(item) > end)) return null;
     if (position < end || last) {
       const sourceTime = position >= end ? clip.out : Math.min(clip.out, clip.in + (position - start));
       return { clip, index, start, end, sourceTime };
@@ -180,13 +246,16 @@ export function locateClip(project, time) {
   return null;
 }
 
-export function addAsset(project, asset) {
+export function addAsset(project, asset, audioStart = 0) {
   requireRecord(asset, '素材の情報が正しくありません。');
   const nextAsset = validateAsset({ ...asset, id: asset.id ?? crypto.randomUUID() });
   if (project.assets.some(item => item.id === nextAsset.id)) {
     throw new Error('同じIDの素材がすでにあります。');
   }
-  return appendClip({ ...project, assets: [...project.assets, nextAsset] }, nextAsset.id);
+  const next = { ...project, assets: [...project.assets, nextAsset] };
+  return assetKind(nextAsset) === 'audio'
+    ? addAudioClip(next, nextAsset.id, audioStart)
+    : appendClip(next, nextAsset.id);
 }
 
 function findAsset(project, assetId) {
@@ -197,11 +266,65 @@ function findAsset(project, assetId) {
 
 export function appendClip(project, assetId) {
   const asset = findAsset(project, assetId);
-  if (!Number.isFinite(timelineDuration(project) + asset.duration)) {
+  const kind = assetKind(asset);
+  if (kind === 'audio') throw new Error('音声素材は音声トラックに配置してください。');
+  const duration = kind === 'image' ? Math.min(3, asset.duration) : asset.duration;
+  if (!Number.isFinite(visualDuration(project) + duration)) {
     throw new Error('タイムラインが長すぎます。');
   }
-  const clip = { id: crypto.randomUUID(), assetId, in: 0, out: asset.duration };
+  const clip = { id: crypto.randomUUID(), assetId, in: 0, out: duration };
   return { ...project, clips: [...project.clips, clip] };
+}
+
+function selectAudioClip(project, id) {
+  const clips = project.audioClips ?? [];
+  const index = clips.findIndex(clip => clip.id === id);
+  if (index < 0) throw new Error('音声クリップが見つかりません。');
+  return { clips, index, clip: clips[index] };
+}
+
+export function addAudioClip(project, assetId, start = 0) {
+  const asset = findAsset(project, assetId);
+  const clip = validateAudioClip({ id: crypto.randomUUID(), assetId, start, in: 0, out: asset.duration, gain: 1 }, asset);
+  return { ...project, audioClips: [...(project.audioClips ?? []), clip] };
+}
+
+export function updateAudioClip(project, id, { start, in: inPoint, out, gain }) {
+  const { clips, index, clip } = selectAudioClip(project, id);
+  const asset = findAsset(project, clip.assetId);
+  const updated = validateAudioClip({
+    ...clip,
+    start: start ?? clip.start,
+    in: inPoint ?? clip.in,
+    out: out ?? clip.out,
+    gain: gain ?? clip.gain,
+  }, asset);
+  if (updated.start === clip.start && updated.in === clip.in && updated.out === clip.out && updated.gain === clip.gain) return project;
+  return { ...project, audioClips: clips.toSpliced(index, 1, updated) };
+}
+
+export function removeAudioClip(project, id) {
+  const { clips, index } = selectAudioClip(project, id);
+  return { ...project, audioClips: clips.toSpliced(index, 1) };
+}
+
+export function splitAudioClip(project, id, time) {
+  const { clips, index, clip } = selectAudioClip(project, id);
+  if (!Number.isFinite(time) || time <= clip.start || time >= audioClipEnd(clip)) {
+    throw new Error('選択した音声の途中に再生位置を合わせてください。');
+  }
+  const asset = findAsset(project, clip.assetId);
+  const splitAt = clip.in + (time - clip.start);
+  const left = validateAudioClip({ ...clip, out: splitAt }, asset);
+  const right = validateAudioClip({ ...clip, id: crypto.randomUUID(), start: time, in: splitAt }, asset);
+  return { ...project, audioClips: clips.toSpliced(index, 1, left, right) };
+}
+
+export function duplicateAudioClip(project, id) {
+  const { clips, index, clip } = selectAudioClip(project, id);
+  const asset = findAsset(project, clip.assetId);
+  const duplicate = validateAudioClip({ ...clip, id: crypto.randomUUID(), start: audioClipEnd(clip) }, asset);
+  return { ...project, audioClips: clips.toSpliced(index + 1, 0, duplicate) };
 }
 
 function findClipIndex(project, clipId) {

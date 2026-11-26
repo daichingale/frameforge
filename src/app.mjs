@@ -1,17 +1,22 @@
 import {
-  addAsset, appendClip, createProject, locateClip, moveClip, parseProject,
-  removeCaption, removeClip, rippleDeleteRange, setCaption, sliceProject, splitClip,
-  timelineDuration, trimClip, trimClipToPlayhead,
-} from './project.mjs?v=2';
-import {captionAt, drawFrame} from './render.mjs';
-import {cueVideo, inspectMedia} from './media.mjs';
-import {exportVideo, getExportFormats} from './export.mjs?v=2';
-import {createPreviewProxy, inspectPreviewMedia, isLightPreviewSource} from './proxy.mjs?v=2';
-import {mountTimeline} from './timeline.mjs?v=2';
+  addAsset, addAudioClip, appendClip, assetKind, createProject, duplicateAudioClip,
+  locateClip, moveClip, parseProject, removeAudioClip, removeCaption, removeClip,
+  rippleDeleteRange, setCaption, sliceProject, splitAudioClip, splitClip,
+  timelineDuration, trimClip, trimClipToPlayhead, updateAudioClip,
+} from './project.mjs?v=3';
+import {captionAt, drawFrame} from './render.mjs?v=3';
+import {cueVideo, inspectMedia, loadImage, mediaKind} from './media.mjs?v=3';
+import {getExportFormats} from './export.mjs?v=3';
+import {exportMixedVideo} from './mixed-export.mjs?v=3';
+import {createPreviewProxy, inspectPreviewMedia, isLightPreviewSource} from './proxy.mjs?v=3';
+import {mountTimeline} from './timeline.mjs?v=3';
+import {createPreviewAudio} from './preview-audio.mjs?v=3';
 
 const $ = id => document.getElementById(id);
 const sources = new Map();
 const proxies = new Map();
+const previewAudio = createPreviewAudio();
+const images = new Map();
 const past = [];
 const future = [];
 const video = document.createElement('video');
@@ -35,6 +40,8 @@ let rangeEnd = null;
 const EDIT_STEP = 1 / 30;
 
 const findAsset = id => project.assets.find(asset => asset.id === id);
+const findAudio = () => project.audioClips?.find(clip => clip.id === selectedId);
+const hasSelection = () => Boolean(findAudio() || project.clips.some(clip => clip.id === selectedId));
 const notify = message => { $('status').textContent = message; };
 const round = value => Number(value.toFixed(3));
 const formatTime = time => {
@@ -70,6 +77,8 @@ const timeline = mountTimeline({
     const index = project.clips.findIndex(clip => clip.id === id);
     return moveClip(project, id, target - index);
   }),
+  onAudioMove: (id, start) => edit(() => updateAudioClip(project, id, {start})),
+  onAudioTrim: (id, patch) => edit(() => updateAudioClip(project, id, patch)),
   onCaptionSelect: selectCaption,
 });
 
@@ -86,7 +95,11 @@ function showTime() {
   $('time-readout').textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
   timeline.setTime(currentTime);
   const location = locateClip(project, currentTime);
-  const canSplit = location && Math.min(currentTime - location.start, location.end - currentTime) >= 0.05 - 1e-9;
+  const audio = findAudio();
+  const target = audio ? {start: audio.start, end: audio.start + (audio.out - audio.in)} : location;
+  const canSplit = target && (audio
+    ? currentTime > target.start && currentTime < target.end
+    : Math.min(currentTime - target.start, target.end - currentTime) >= 0.05 - 1e-9);
   $('split').disabled = !canSplit || mediaBusy;
   const picked = location?.clip.id === selectedId && location;
   $('trim-to-in').disabled = !picked || !(currentTime > picked.start && picked.end - currentTime >= 0.05 - 1e-9);
@@ -110,60 +123,73 @@ async function preview(autoplay = false) {
   const controller = new AbortController();
   playback = controller;
   const {signal} = controller;
-  let position = locateClip(project, currentTime);
-  if (!position) {
-    paint();
-    playback = null;
-    return;
-  }
+  const duration = timelineDuration(project);
   if (autoplay) setPlaying(true);
 
   try {
-    while (position) {
-      const url = sources.get(position.clip.assetId);
-      if (!url) {
-        paint();
-        if (autoplay) notify(`「${findAsset(position.clip.assetId).name}」を再リンクしてください。`);
-        break;
-      }
-      const proxy = autoplay && $('use-proxy').checked && proxies.get(position.clip.assetId);
-      if (proxy) {
-        try {
-          await cueVideo(video, proxy, position.sourceTime, signal);
-        } catch (error) {
-          if (signal.aborted) throw error;
-          await cueVideo(video, url, position.sourceTime, signal);
+    do {
+      let position = locateClip(project, currentTime);
+      if (position && currentTime >= position.end && currentTime < duration) position = null;
+      const asset = position && findAsset(position.clip.assetId);
+      const url = asset && sources.get(asset.id);
+      const start = currentTime;
+      const end = position?.end ?? duration;
+      const prepare = autoplay
+        ? previewAudio.prepare(project.audioClips ?? [], sources, start, end, signal)
+        : Promise.resolve(() => () => {});
+      const frameReady = async () => {
+        if (!url) return null;
+        if (assetKind(asset) === 'image') {
+          if (!images.has(url)) images.set(url, await loadImage(url, signal));
+          return images.get(url);
         }
-      } else {
+        const proxy = autoplay && $('use-proxy').checked && proxies.get(asset.id);
+        if (proxy) {
+          try {
+            await cueVideo(video, proxy, position.sourceTime, signal);
+            return video;
+          } catch (error) {
+            if (signal.aborted) throw error;
+          }
+        }
         await cueVideo(video, url, position.sourceTime, signal);
+        return video;
+      };
+      const [frame, startAudio] = await Promise.all([frameReady(), prepare]);
+      signal.throwIfAborted();
+      paint(frame);
+      if (!autoplay) break;
+      if (asset && !url) notify(`「${asset.name}」を再リンクしてください。`);
+      const rate = Number($('playback-rate').value);
+      if (frame === video) {
+        video.playbackRate = rate;
+        await video.play();
       }
       signal.throwIfAborted();
-      paint(video);
-      if (!autoplay) break;
-      video.playbackRate = Number($('playback-rate').value);
-      await video.play();
-      signal.throwIfAborted();
-      await new Promise(resolve => {
-        const update = () => {
-          if (signal.aborted) return resolve();
-          currentTime = Math.min(position.end, position.start + Math.max(0, video.currentTime - position.clip.in));
-          paint(video);
-          if (video.ended || currentTime >= position.end || video.error) return resolve();
+      const stopAudio = startAudio(rate);
+      const origin = performance.now();
+      try {
+        await new Promise(resolve => {
+          const update = now => {
+            if (signal.aborted) return resolve();
+            currentTime = Math.min(end, frame === video
+              ? position.start + Math.max(0, video.currentTime - position.clip.in)
+              : start + (now - origin) / 1000 * rate);
+            paint(frame);
+            if (currentTime >= end || (frame === video && (video.ended || video.error))) return resolve();
+            requestAnimationFrame(update);
+          };
           requestAnimationFrame(update);
-        };
-        requestAnimationFrame(update);
-      });
+        });
+      } finally {
+        stopAudio();
+      }
       signal.throwIfAborted();
       video.pause();
-      if (video.error) throw new Error('この動画の再生中にエラーが発生しました。');
-      currentTime = position.end;
-      const duration = timelineDuration(project);
-      if (currentTime >= duration) {
-        paint(video);
-        break;
-      }
-      position = locateClip(project, currentTime);
-    }
+      if (frame === video && video.error) throw new Error('この動画の再生中にエラーが発生しました。');
+      currentTime = end;
+      paint(frame);
+    } while (currentTime < duration);
   } catch (error) {
     if (!signal.aborted) {
       paint();
@@ -187,8 +213,8 @@ function showRange() {
   const current = time => time === null ? '—' : formatTime(time);
   $('range-readout').textContent = rangeStart === null && rangeEnd === null
     ? '区間未設定' : `${current(rangeStart)} → ${current(rangeEnd)}`;
-  $('range-start').disabled = mediaBusy || project.clips.length === 0;
-  $('range-end').disabled = mediaBusy || project.clips.length === 0;
+  $('range-start').disabled = mediaBusy || timelineDuration(project) === 0;
+  $('range-end').disabled = mediaBusy || timelineDuration(project) === 0;
   $('range-remove').disabled = mediaBusy || rangeStart === null || rangeEnd === null || rangeStart >= rangeEnd;
   $('range-clear').disabled = rangeStart === null && rangeEnd === null;
   timeline.setRange(rangeStart, rangeEnd);
@@ -221,8 +247,20 @@ function selectCaption(id) {
 function renderInspector() {
   const index = project.clips.findIndex(clip => clip.id === selectedId);
   const clip = project.clips[index];
-  $('selection-empty').hidden = Boolean(clip);
+  const audio = findAudio();
+  $('selection-empty').hidden = Boolean(clip || audio);
   $('clip-inspector').hidden = !clip;
+  $('audio-inspector').hidden = !audio;
+  if (audio) {
+    const asset = findAsset(audio.assetId);
+    $('audio-name').textContent = asset.name;
+    $('audio-start').value = audio.start;
+    $('audio-gain').value = audio.gain * 100;
+    for (const edge of ['in', 'out']) {
+      $(`audio-${edge}`).value = audio[edge];
+      $(`audio-${edge}`).max = asset.duration;
+    }
+  }
   if (clip) {
     const asset = findAsset(clip.assetId);
     $('clip-name').textContent = asset.name;
@@ -245,13 +283,16 @@ function render() {
     const linked = sources.has(asset.id);
     row.className = linked ? 'asset-row' : 'asset-row missing';
     const label = document.createElement('span');
-    label.textContent = `${asset.name} · ${formatTime(asset.duration)}${linked ? '' : ' · 未リンク'}`;
-    const add = button('+', 'asset-add', () => edit(() => appendClip(project, asset.id)));
+    const kind = assetKind(asset);
+    label.textContent = `${asset.name} · ${kind === 'image' ? '画像' : formatTime(asset.duration)}${linked ? '' : ' · 未リンク'}`;
+    const add = button('+', 'asset-add', () => edit(() => kind === 'audio'
+      ? addAudioClip(project, asset.id, currentTime)
+      : appendClip(project, asset.id)));
     add.setAttribute('aria-label', `${asset.name} をタイムラインに追加`);
     const actions = document.createElement('div');
     actions.className = 'asset-actions';
     actions.append(add);
-    if (linked) {
+    if (linked && kind === 'video') {
       const active = proxyTask?.assetId === asset.id;
       const proxyReady = proxies.has(asset.id);
       const proxyButton = button(active ? '軽量化を中止' : proxyReady ? '軽量版を解除' : '軽量化', '', () => manageProxy(asset));
@@ -262,10 +303,10 @@ function render() {
     row.append(label, actions);
     assets.append(row);
   }
-  if (project.assets.length === 0) assets.textContent = '動画素材を追加してください';
+  if (project.assets.length === 0) assets.textContent = '動画・画像・音声を追加してください';
 
-  $('timeline-empty').hidden = project.clips.length > 0;
-  $('timeline').hidden = project.clips.length === 0;
+  $('timeline-empty').hidden = duration > 0;
+  $('timeline').hidden = duration === 0;
   timeline.render({project, selectedId, sources});
   renderInspector();
 
@@ -294,6 +335,7 @@ function render() {
   $('undo').disabled = !past.length || mediaBusy;
   $('redo').disabled = !future.length || mediaBusy;
   $('add-media').disabled = mediaBusy;
+  $('add-files').disabled = mediaBusy;
   $('relink-media').disabled = mediaBusy || !project.assets.some(asset => !sources.has(asset.id));
   $('open-project').disabled = mediaBusy;
   $('export-open').disabled = !duration || mediaBusy || Boolean(proxyTask);
@@ -306,9 +348,9 @@ function commit(next) {
   past.push(project);
   if (past.length > 100) past.shift();
   future.length = 0;
-  if (next.clips !== project.clips) clearRange();
+  if (next.clips !== project.clips || next.audioClips !== project.audioClips) clearRange();
   project = next;
-  if (!project.clips.some(clip => clip.id === selectedId)) selectedId = null;
+  if (!hasSelection()) selectedId = null;
   currentTime = Math.min(currentTime, timelineDuration(project));
   render();
   void preview();
@@ -327,7 +369,7 @@ function restore(from, to) {
   if (mediaBusy || from.length === 0) return;
   to.push(project);
   project = from.pop();
-  if (!project.clips.some(clip => clip.id === selectedId)) selectedId = null;
+  if (!hasSelection()) selectedId = null;
   clearRange();
   currentTime = Math.min(currentTime, timelineDuration(project));
   resetCaption();
@@ -352,11 +394,28 @@ async function runMediaJob(files, handler) {
 }
 
 function readFiles(id, handler) {
-  $(id).addEventListener('change', event => {
+  const input = $(id);
+  input.addEventListener('cancel', () => {
+    if (!mediaBusy) {
+      $('import-state').hidden = true;
+      $('import-progress').hidden = true;
+    }
+  });
+  input.addEventListener('change', event => {
     const files = Array.from(event.target.files);
     event.target.value = '';
     void runMediaJob(files, handler);
   });
+}
+
+function openPicker(id, photos = false) {
+  const state = $('import-state');
+  state.hidden = false;
+  $('import-progress').hidden = true;
+  state.textContent = photos
+    ? '選択後は右上の✓を押し、写真アプリから素材が渡されるまでお待ちください。'
+    : '「ファイル」から動画・画像・音声を選んでください。';
+  $(id).click();
 }
 
 async function manageProxy(asset) {
@@ -416,37 +475,65 @@ async function importMedia(files, relink) {
   const failures = [];
   const attached = [];
   let next = project;
-  for (const file of files) {
+  const state = $('import-state');
+  const progress = $('import-progress');
+  state.hidden = false;
+  progress.hidden = false;
+  progress.max = files.length;
+  progress.value = 0;
+  let audioStart = currentTime;
+  for (const [index, file] of files.entries()) {
+    state.textContent = `端末から取り込み中 ${index + 1}/${files.length} · ${file.name}`;
     const url = URL.createObjectURL(file);
     try {
-      const duration = await inspectMedia(url);
+      const kind = mediaKind(file);
+      const duration = await inspectMedia(url, kind);
       if (relink) {
         const candidates = project.assets.filter(asset =>
           !sources.has(asset.id) && asset.name === file.name && asset.size === file.size
-          && Math.abs(asset.duration - duration) < 0.1);
+          && assetKind(asset) === kind && (kind === 'image' || Math.abs(asset.duration - duration) < 0.1));
         const exact = candidates.find(asset => asset.lastModified === file.lastModified);
         const asset = exact ?? (candidates.length === 1 ? candidates[0] : null);
         if (!asset) throw new Error('一致する未リンク素材がありません');
         sources.set(asset.id, url);
       } else {
         const id = crypto.randomUUID();
-        next = addAsset(next, {id, name: file.name, duration, size: file.size, lastModified: file.lastModified});
+        next = addAsset(next, {id, kind, name: file.name, duration, size: file.size, lastModified: file.lastModified}, audioStart);
         sources.set(id, url);
+        if (kind === 'audio') audioStart += duration;
       }
       attached.push(file.name);
     } catch (error) {
       URL.revokeObjectURL(url);
       failures.push(`${file.name}（${error.message}）`);
     }
+    progress.value = index + 1;
   }
   commit(next);
+  progress.hidden = true;
+  state.textContent = `${relink ? '再リンク' : '取り込み'}完了 · 成功 ${attached.length}件／失敗 ${failures.length}件`;
+  if (failures.length) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    const list = document.createElement('ul');
+    summary.textContent = '開けなかったファイル';
+    for (const failure of failures) {
+      const item = document.createElement('li');
+      item.textContent = failure;
+      list.append(item);
+    }
+    details.append(summary, list);
+    state.append(details);
+  }
   notify([`${relink ? '再リンク' : '追加'} ${attached.length}件`, ...failures].join(' ／ '));
 }
 
-$('add-media').onclick = () => $('media-input').click();
+$('add-media').onclick = () => openPicker('media-input', true);
+$('add-files').onclick = () => openPicker('files-input');
 $('open-project').onclick = () => $('project-input').click();
-$('relink-media').onclick = () => $('relink-input').click();
+$('relink-media').onclick = () => openPicker('relink-input');
 readFiles('media-input', files => importMedia(files, false));
+readFiles('files-input', files => importMedia(files, false));
 readFiles('relink-input', files => importMedia(files, true));
 const mediaPanel = $('media-panel');
 mediaPanel.addEventListener('dragover', event => {
@@ -471,6 +558,8 @@ readFiles('project-input', async ([file]) => {
     const newAsset = opened.assets.find(asset => asset.id === id);
     if (newAsset && oldAsset && ['name', 'size', 'lastModified', 'duration'].every(key => oldAsset[key] === newAsset[key])) continue;
     URL.revokeObjectURL(url);
+    previewAudio.release(url);
+    images.delete(url);
     sources.delete(id);
     if (proxies.has(id)) URL.revokeObjectURL(proxies.get(id));
     proxies.delete(id);
@@ -483,7 +572,7 @@ readFiles('project-input', async ([file]) => {
   clearRange();
   resetCaption();
   notify(opened.assets.some(asset => !sources.has(asset.id))
-    ? 'プロジェクトを開きました。元の動画を「素材を再リンク」から選んでください。'
+    ? 'プロジェクトを開きました。元のファイルを「素材を再リンク」から選んでください。'
     : 'プロジェクトを開きました。');
 });
 
@@ -494,7 +583,7 @@ $('save-project').onclick = () => {
   link.download = 'frameforge-project.json';
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 30000);
-  notify('プロジェクトを保存しました。別の端末で開くときは元の動画も用意してください。');
+  notify('プロジェクトを保存しました。別の端末で開くときは元の素材ファイルも用意してください。');
 };
 $('undo').onclick = () => restore(past, future);
 $('redo').onclick = () => restore(future, past);
@@ -514,14 +603,16 @@ $('play-pause').onclick = togglePlayback;
 $('seek').oninput = event => seekTo(Number(event.target.value));
 $('step-back').onclick = () => seekTo(currentTime - EDIT_STEP);
 $('step-forward').onclick = () => seekTo(currentTime + EDIT_STEP);
-$('playback-rate').onchange = () => { video.playbackRate = Number($('playback-rate').value); };
+$('playback-rate').onchange = () => { if (playing) void preview(true); };
 $('use-proxy').onchange = () => { if (playing) void preview(true); };
 $('timeline-zoom').oninput = event => timeline.setZoom(Number(event.target.value));
 $('timeline-fit').onclick = () => {
   const zoom = timeline.fit();
   if (Number.isFinite(zoom)) $('timeline-zoom').value = zoom;
 };
-$('split').onclick = () => edit(() => splitClip(project, currentTime));
+$('split').onclick = () => edit(() => findAudio()
+  ? splitAudioClip(project, selectedId, currentTime)
+  : splitClip(project, currentTime));
 $('range-start').onclick = () => {
   rangeStart = currentTime;
   if (rangeEnd !== null && rangeEnd <= rangeStart) rangeEnd = null;
@@ -548,6 +639,17 @@ $('clip-inspector').onsubmit = event => {
 $('clip-left').onclick = () => edit(() => moveClip(project, selectedId, -1));
 $('clip-right').onclick = () => edit(() => moveClip(project, selectedId, 1));
 $('clip-remove').onclick = () => edit(() => removeClip(project, selectedId));
+$('audio-remove').onclick = () => edit(() => removeAudioClip(project, selectedId));
+$('audio-duplicate').onclick = () => edit(() => duplicateAudioClip(project, selectedId));
+$('audio-inspector').onsubmit = event => {
+  event.preventDefault();
+  edit(() => updateAudioClip(project, selectedId, {
+    start: $('audio-start').valueAsNumber,
+    in: $('audio-in').valueAsNumber,
+    out: $('audio-out').valueAsNumber,
+    gain: $('audio-gain').valueAsNumber / 100,
+  }));
+};
 $('trim-to-in').onclick = () => edit(() => trimClipToPlayhead(project, selectedId, currentTime, 'in'));
 $('trim-to-out').onclick = () => edit(() => trimClipToPlayhead(project, selectedId, currentTime, 'out'));
 $('clip-duplicate').onclick = () => edit(() => {
@@ -614,11 +716,13 @@ $('export-form').onsubmit = async event => {
   $('export-message').textContent = '書き出し中…';
   try {
     const [width, height] = $('export-size').value.split('x').map(Number);
-    const range = sliceProject(project, $('export-in').valueAsNumber, $('export-out').valueAsNumber);
-    const {blob, extension} = await exportVideo({
+    const start = $('export-in').valueAsNumber;
+    const end = $('export-out').valueAsNumber;
+    const range = sliceProject(project, start, end);
+    const {blob, extension} = await exportMixedVideo({
       project: range,
       sources,
-      options: {height, width, format: $('export-format').value},
+      options: {height, width, format: $('export-format').value, duration: end - start},
       signal: controller.signal,
       onProgress: fraction => { $('export-progress').value = fraction; },
     });
@@ -659,13 +763,13 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     if (key === 'y' || event.shiftKey) restore(future, past);
     else restore(past, future);
-  } else if (modifier && key === 'd' && selectedId) {
+  } else if (modifier && key === 'd' && hasSelection()) {
     event.preventDefault();
-    $('clip-duplicate').click();
+    $(findAudio() ? 'audio-duplicate' : 'clip-duplicate').click();
   } else if (!modifier && !event.altKey) {
-    const shortcut = {s: 'split', i: 'range-start', o: 'range-end', delete: 'clip-remove'};
+    const shortcut = {s: 'split', i: 'range-start', o: 'range-end', delete: findAudio() ? 'audio-remove' : 'clip-remove'};
     const action = shortcut[key];
-    if (action && (action !== 'clip-remove' || project.clips.some(clip => clip.id === selectedId))) {
+    if (action && (key !== 'delete' || hasSelection())) {
       event.preventDefault();
       $(action).click();
     } else if (event.code === 'Space' && event.target === document.body) {

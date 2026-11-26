@@ -21,15 +21,17 @@ function wrapCaption(ctx, text, maxWidth) {
   });
 }
 
-export function drawFrame(ctx, video, captionText = '') {
+export function drawFrame(ctx, visual, captionText = '') {
   const {width, height} = ctx.canvas;
   ctx.fillStyle = '#07090d';
   ctx.fillRect(0, 0, width, height);
-  if (video?.readyState >= 2 && video.videoWidth > 0) {
-    const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
-    const w = video.videoWidth * scale;
-    const h = video.videoHeight * scale;
-    ctx.drawImage(video, (width - w) / 2, (height - h) / 2, w, h);
+  const sourceWidth = visual?.naturalWidth || (visual?.readyState >= 2 ? visual.videoWidth : 0);
+  const sourceHeight = visual?.naturalHeight || visual?.videoHeight;
+  if (sourceWidth > 0 && sourceHeight > 0) {
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const w = sourceWidth * scale;
+    const h = sourceHeight * scale;
+    ctx.drawImage(visual, (width - w) / 2, (height - h) / 2, w, h);
   }
   if (!captionText) return;
 

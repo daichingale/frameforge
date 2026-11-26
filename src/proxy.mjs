@@ -1,5 +1,5 @@
-import {exportVideo, getExportFormats} from './export.mjs?v=2';
-import {mediaEvent} from './media.mjs';
+import {exportVideo, getExportFormats} from './export.mjs?v=3';
+import {mediaEvent} from './media.mjs?v=3';
 
 const MAX_LONG_EDGE = 640;
 const MAX_SHORT_EDGE = 360;

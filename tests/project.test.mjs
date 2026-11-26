@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  addAsset, appendClip, createProject, locateClip, moveClip, parseProject,
-  removeCaption, removeClip, rippleDeleteRange, setCaption, sliceProject, splitClip,
-  timelineDuration, trimClip, trimClipToPlayhead,
+  addAsset, addAudioClip, appendClip, assetKind, audioClipEnd, createProject, duplicateAudioClip,
+  locateClip, moveClip, parseProject, removeAudioClip, removeCaption, removeClip, rippleDeleteRange,
+  setCaption, sliceProject, splitAudioClip, splitClip, timelineDuration, trimClip, trimClipToPlayhead,
+  updateAudioClip, visualDuration,
 } from '../src/project.mjs';
 
 function asset(id = 'a', duration = 8) {
@@ -179,4 +180,75 @@ test('trim to playhead maps a timeline position to the selected source coordinat
   assert.throws(() => trimClipToPlayhead(trimmed, clipId, 7, 'in'));
   assert.throws(() => trimClipToPlayhead(trimmed, clipId, 8, 'out'));
   assert.throws(() => trimClipToPlayhead(trimmed, clipId, 9, 'center'));
+});
+
+test('legacy projects and mixed media load with independent visual and audio lengths', () => {
+  const legacy = addAsset(createProject(), asset('old', 2));
+  const {audioClips: _unused, ...legacyData} = legacy;
+  const opened = parseProject(JSON.stringify(legacyData));
+  assert.deepEqual(opened, legacy);
+  assert.equal(assetKind(opened.assets[0]), 'video');
+
+  const image = addAsset(opened, {...asset('still', 3600), kind: 'image'});
+  assert.equal(image.clips[1].out, 3);
+  assert.equal(visualDuration(image), 5);
+  const held = trimClip(image, image.clips[1].id, 0, 5);
+  const mixed = addAsset(held, {...asset('music', 10), kind: 'audio'}, 0.5);
+  assert.equal(visualDuration(mixed), 7);
+  assert.equal(timelineDuration(mixed), 10.5);
+  assert.equal(locateClip(mixed, 8), null);
+  assert.equal(locateClip(mixed, 6).clip.assetId, 'still');
+  assert.equal(mixed.audioClips[0].start, 0.5);
+  assert.equal(audioClipEnd(mixed.audioClips[0]), 10.5);
+  assert.deepEqual(parseProject(JSON.stringify(mixed)), mixed);
+  assert.throws(() => appendClip(mixed, 'music'), /音声トラック/);
+  assert.throws(() => addAudioClip(mixed, 'still'), /音声素材/);
+  assert.throws(() => parseProject(JSON.stringify({...mixed, audioClips: null})), /音声トラック/);
+  assert.throws(() => parseProject(JSON.stringify({
+    ...mixed, audioClips: [{...mixed.audioClips[0], assetId: 'still'}],
+  })), /音声素材/);
+});
+
+test('audio placement supports sub-frame splits, editing, looping a snippet, and deletion', () => {
+  const project = addAsset(createProject(), {...asset('sound', 5), kind: 'audio'});
+  const id = project.audioClips[0].id;
+  const trimmed = updateAudioClip(project, id, {start: 2, in: 0.5, out: 2.5, gain: 0.4});
+  const split = splitAudioClip(trimmed, id, 2.01);
+  assert.equal(split.audioClips[0].id, id);
+  assert.ok(Math.abs(split.audioClips[0].out - 0.51) < 1e-9);
+  assert.equal(split.audioClips[1].in, split.audioClips[0].out);
+  assert.equal(split.audioClips[1].start, 2.01);
+  assert.equal(split.audioClips[1].gain, 0.4);
+  const repeated = duplicateAudioClip(split, split.audioClips[1].id);
+  assert.equal(repeated.audioClips[2].start, 4);
+  assert.notEqual(repeated.audioClips[2].id, repeated.audioClips[1].id);
+  assert.ok(Math.abs(timelineDuration(repeated) - 5.99) < 1e-9);
+  assert.deepEqual(removeAudioClip(repeated, repeated.audioClips[2].id), split);
+  assert.deepEqual(parseProject(JSON.stringify(repeated)), repeated);
+  assert.throws(() => updateAudioClip(project, id, {gain: 2.5}), /音量/);
+  assert.throws(() => updateAudioClip(project, id, {start: -1}), /配置時刻/);
+  assert.throws(() => splitAudioClip(trimmed, id, 4), /途中/);
+});
+
+test('slicing and ripple deletion adjust audio clips, including clips spanning both boundaries', () => {
+  let project = addAsset(createProject(), {...asset('sound', 8), kind: 'audio'}, 1);
+  const id = project.audioClips[0].id;
+  project = addAudioClip(project, 'sound', 10);
+  project = setCaption(project, {id: 'caption', start: 2, end: 7, text: 'Audio only'});
+  const sliced = sliceProject(project, 3, 5);
+  assert.deepEqual(sliced.audioClips, [{...project.audioClips[0], start: 0, in: 2, out: 4}]);
+  assert.equal(timelineDuration(sliced), 2);
+  assert.deepEqual(sliceProject(project, 9, 10).audioClips, []);
+
+  const result = rippleDeleteRange(project, 3, 5);
+  assert.equal(result.audioClips.length, 3);
+  assert.deepEqual(result.audioClips[0], {id, assetId: 'sound', start: 1, in: 0, out: 2, gain: 1});
+  assert.notEqual(result.audioClips[1].id, id);
+  assert.deepEqual(result.audioClips[1], {...result.audioClips[1], start: 3, in: 4, out: 8});
+  assert.equal(result.audioClips[2].start, 8);
+  assert.deepEqual(result.captions, [{...project.captions[0], end: 5}]);
+  assert.deepEqual(parseProject(JSON.stringify(result)), result);
+  const cleared = rippleDeleteRange(project, 0, timelineDuration(project));
+  assert.equal(cleared.audioClips.length, 0);
+  assert.equal(cleared.captions.length, 0);
 });

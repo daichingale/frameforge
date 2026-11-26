@@ -11,7 +11,7 @@ export function mediaEvent(video, name, signal, timeout = 8000) {
       else resolve();
     };
     const success = () => finish();
-    const failure = () => finish(new Error('この動画を読み込めませんでした。対応する形式で保存し直してください。'));
+    const failure = () => finish(new Error('この素材を読み込めませんでした。対応する形式で保存し直してください。'));
     const abort = () => finish(signal.reason);
     video.addEventListener(name, success, {once: true});
     video.addEventListener('error', failure, {once: true});
@@ -20,21 +20,41 @@ export function mediaEvent(video, name, signal, timeout = 8000) {
   });
 }
 
-export async function inspectMedia(url) {
-  const video = document.createElement('video');
+export async function inspectMedia(url, kind = 'video') {
+  if (kind === 'image') {
+    await loadImage(url);
+    return 3600;
+  }
+  const video = document.createElement(kind === 'audio' ? 'audio' : 'video');
   video.preload = 'metadata';
   try {
     const ready = mediaEvent(video, 'loadedmetadata');
     video.src = url;
     await ready;
-    if (!(video.duration > 0 && Number.isFinite(video.duration) && video.videoWidth > 0)) {
-      throw new Error('長さを取得できる動画ファイルを選んでください。');
+    if (!(video.duration > 0 && Number.isFinite(video.duration) && (kind === 'audio' || video.videoWidth > 0))) {
+      throw new Error('長さを取得できるファイルを選んでください。');
     }
     return video.duration;
   } finally {
     video.removeAttribute('src');
     video.load();
   }
+}
+
+export async function loadImage(url, signal) {
+  const image = new Image();
+  const ready = mediaEvent(image, 'load', signal);
+  image.src = url;
+  await ready;
+  return image;
+}
+
+export function mediaKind(file) {
+  if (/\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i.test(file.name)) return 'image';
+  if (/\.(aac|aif?f|flac|m4a|mp3|oga|ogg|opus|wav)$/i.test(file.name)) return 'audio';
+  if (/^(image|audio|video)\//.test(file.type)) return file.type.split('/')[0];
+  if (/\.(m4v|mkv|mov|mp4|ogv|webm)$/i.test(file.name)) return 'video';
+  throw new Error('動画・画像・音声ファイルを選んでください。');
 }
 
 export async function cueVideo(video, url, time, signal) {

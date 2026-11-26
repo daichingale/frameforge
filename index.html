@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#14171b">
   <title>FrameForge — 動画エディター</title>
-  <link rel="stylesheet" href="./src/styles.css?v=2">
-  <link rel="stylesheet" href="./src/timeline.css?v=2">
+  <link rel="stylesheet" href="./src/styles.css?v=3">
+  <link rel="stylesheet" href="./src/timeline.css?v=3">
 </head>
 <body>
   <header class="toolbar">
@@ -28,13 +28,19 @@
     <section class="panel media-panel" id="media-panel" aria-labelledby="media-heading">
       <header class="panel-header">
         <h2 id="media-heading">メディア</h2>
-        <button id="add-media" type="button" class="small-button">＋ 追加</button>
-        <input id="media-input" type="file" accept="video/*,.mkv,.mov,.webm,.mp4,.m4v" multiple hidden>
+        <div class="asset-actions">
+          <button id="add-media" type="button" class="small-button">写真・動画</button>
+          <button id="add-files" type="button" class="small-button">ファイル</button>
+        </div>
+        <input id="media-input" type="file" accept="image/*,video/*" multiple hidden>
+        <input id="files-input" type="file" multiple hidden>
       </header>
+      <div id="import-state" class="import-state" role="status" hidden></div>
+      <progress id="import-progress" class="import-progress" aria-label="素材の取り込み" hidden></progress>
       <div id="asset-list" class="asset-list"></div>
       <div class="panel-footer">
         <button id="relink-media" type="button">素材を再リンク</button>
-        <input id="relink-input" type="file" accept="video/*,.mkv,.mov,.webm,.mp4,.m4v" multiple hidden>
+        <input id="relink-input" type="file" multiple hidden>
       </div>
     </section>
 
@@ -78,7 +84,7 @@
         <button id="range-clear" type="button">解除</button>
       </div>
       <div class="timeline-body">
-        <p id="timeline-empty" class="empty-state">メディアから動画を追加してください。</p>
+        <p id="timeline-empty" class="empty-state">メディアから動画・画像・音声を追加してください。</p>
         <div id="timeline" class="timeline" aria-label="動画クリップ"></div>
       </div>
     </section>
@@ -105,6 +111,22 @@
             <button id="clip-right" type="button">後ろへ</button>
             <button id="clip-remove" class="danger" type="button">削除</button>
             <button id="clip-duplicate" type="button" aria-keyshortcuts="Control+D">複製</button>
+          </div>
+        </form>
+        <form id="audio-inspector" class="edit-form" hidden>
+          <p id="audio-name" class="clip-name"></p>
+          <div class="field-pair">
+            <label>タイムライン位置（秒）<input id="audio-start" type="number" min="0" step="any" required></label>
+            <label>音量（%）<input id="audio-gain" type="number" min="0" max="200" step="any" required></label>
+          </div>
+          <div class="field-pair">
+            <label>素材の開始（秒）<input id="audio-in" type="number" min="0" step="any" required></label>
+            <label>素材の終了（秒）<input id="audio-out" type="number" min="0" step="any" required></label>
+          </div>
+          <div class="clip-actions">
+            <button type="submit">適用</button>
+            <button id="audio-duplicate" type="button">複製</button>
+            <button id="audio-remove" type="button" class="danger">削除</button>
           </div>
         </form>
       </section>
@@ -164,6 +186,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="./src/app.mjs?v=2"></script>
+  <script type="module" src="./src/app.mjs?v=3"></script>
 </body>
 </html>

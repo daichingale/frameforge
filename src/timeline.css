@@ -55,6 +55,23 @@
   height: 58px;
 }
 
+.ff-timeline-audio {
+  position: relative;
+  min-height: 59px;
+  border-top: 1px solid #514680;
+  background: #211d2c;
+}
+
+.ff-timeline-audio-label {
+  position: sticky;
+  left: 0;
+  width: max-content;
+  padding: 2px 7px;
+  color: #d8c5f4;
+  font-size: .72rem;
+  pointer-events: none;
+}
+
 .ff-timeline-captions {
   position: relative;
   min-height: 30px;
@@ -71,6 +88,28 @@
   padding: 0;
   overflow: hidden;
   touch-action: pan-y;
+}
+
+.ff-timeline-image-clip.clip-block:not(.missing) {
+  border-color: #898052;
+  color: #fff6d6;
+  background: #4b4328;
+}
+
+.ff-timeline-audio-clip.clip-block {
+  height: 32px;
+  font-size: .76rem;
+}
+
+.ff-timeline-audio-clip.clip-block:not(.missing) {
+  border-color: #9674ba;
+  color: #f4e5ff;
+  background: #473464;
+}
+
+.ff-timeline-audio-clip.clip-block.selected,
+.ff-timeline-image-clip.clip-block.selected {
+  border-color: var(--accent);
 }
 
 .ff-timeline-clip:focus-within {
