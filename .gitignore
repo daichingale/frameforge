@@ -1,0 +1,15 @@
+/target/
+/node_modules/
+**/node_modules/
+**/dist/
+.env
+.env.*
+!.env.example
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.webm
+*.ffproj
+/media/
+/exports/
