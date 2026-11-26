@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14171b">
+  <title>FrameForge — 動画エディター</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i></span>
+      <h1>FrameForge</h1>
+    </div>
+    <div class="project-actions" role="group" aria-label="プロジェクト操作">
+      <button id="undo" type="button" aria-keyshortcuts="Control+Z">元に戻す</button>
+      <button id="redo" type="button" aria-keyshortcuts="Control+Y">やり直す</button>
+      <button id="open-project" type="button">開く</button>
+      <input id="project-input" type="file" accept=".json,application/json" hidden>
+      <button id="save-project" type="button">保存</button>
+      <button id="export-open" class="primary" type="button">動画を書き出す</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="panel media-panel" aria-labelledby="media-heading">
+      <header class="panel-header">
+        <h2 id="media-heading">メディア</h2>
+        <button id="add-media" type="button" class="small-button">＋ 追加</button>
+        <input id="media-input" type="file" accept="video/*,.mkv,.mov,.webm,.mp4,.m4v" multiple hidden>
+      </header>
+      <div id="asset-list" class="asset-list"></div>
+      <div class="panel-footer">
+        <button id="relink-media" type="button">素材を再リンク</button>
+        <input id="relink-input" type="file" accept="video/*,.mkv,.mov,.webm,.mp4,.m4v" multiple hidden>
+      </div>
+    </section>
+
+    <section class="panel preview-panel" aria-labelledby="preview-heading">
+      <header class="panel-header">
+        <h2 id="preview-heading">プレビュー</h2>
+      </header>
+      <div class="viewer">
+        <canvas id="preview" width="1280" height="720" aria-label="編集中の動画"></canvas>
+      </div>
+      <div class="transport" role="group" aria-label="プレビュー操作">
+        <button id="play-pause" type="button" aria-keyshortcuts="Space">再生</button>
+        <input id="seek" aria-label="再生位置" type="range" min="0" max="0" value="0" step="any">
+        <output id="time-readout">0:00.00 / 0:00.00</output>
+      </div>
+    </section>
+
+    <section class="panel timeline-panel" aria-labelledby="timeline-heading">
+      <header class="panel-header">
+        <h2 id="timeline-heading">タイムライン</h2>
+        <button id="split" type="button" class="small-button" aria-keyshortcuts="S">再生位置で分割</button>
+      </header>
+      <div class="timeline-body">
+        <p id="timeline-empty" class="empty-state">メディアから動画を追加してください。</p>
+        <div id="timeline" class="timeline" aria-label="動画クリップ"></div>
+      </div>
+    </section>
+
+    <aside class="panel inspector-panel" aria-label="編集設定">
+      <section aria-labelledby="clip-heading">
+        <header class="panel-header">
+          <h2 id="clip-heading">クリップ</h2>
+        </header>
+        <p id="selection-empty" class="inspector-empty">タイムライン上のクリップを選択してください。</p>
+        <form id="clip-inspector" class="edit-form" hidden>
+          <p id="clip-name" class="clip-name"></p>
+          <div class="field-pair">
+            <label>素材の開始（秒）<input id="clip-in" type="number" min="0" step="any" required></label>
+            <label>素材の終了（秒）<input id="clip-out" type="number" min="0" step="any" required></label>
+          </div>
+          <button type="submit">トリムを適用</button>
+          <div class="clip-actions" role="group" aria-label="クリップの順序と削除">
+            <button id="clip-left" type="button">前へ</button>
+            <button id="clip-right" type="button">後ろへ</button>
+            <button id="clip-remove" class="danger" type="button">削除</button>
+          </div>
+        </form>
+      </section>
+      <section class="caption-section" aria-labelledby="caption-heading">
+        <header class="panel-header">
+          <h2 id="caption-heading">字幕</h2>
+        </header>
+        <form id="caption-form" class="edit-form">
+          <div class="field-pair">
+            <label>開始（秒）<input id="caption-start" type="number" min="0" step="any" required value="0"></label>
+            <label>終了（秒）<input id="caption-end" type="number" min="0" step="any" required value="2"></label>
+          </div>
+          <label>字幕テキスト<textarea id="caption-text" rows="2" required></textarea></label>
+          <div class="caption-actions">
+            <button type="submit">字幕を保存</button>
+            <button id="caption-reset" type="button">新規入力</button>
+          </div>
+        </form>
+        <div id="caption-list" class="caption-list"></div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="status-bar">
+    <p id="status" role="status"></p>
+  </footer>
+
+  <dialog id="export-dialog" aria-labelledby="export-heading">
+    <form id="export-form" class="export-form">
+      <h2 id="export-heading">動画を書き出す</h2>
+      <label>形式
+        <select id="export-format">
+          <option value="auto">自動</option>
+          <option value="webm">WebM</option>
+          <option value="mp4">MP4</option>
+        </select>
+      </label>
+      <label>解像度
+        <select id="export-size">
+          <option value="1280x720">横 1280 × 720</option>
+          <option value="1920x1080">横 1920 × 1080</option>
+          <option value="720x1280">縦 720 × 1280</option>
+          <option value="1080x1920">縦 1080 × 1920</option>
+        </select>
+      </label>
+      <div class="field-pair">
+        <label>切り出し開始（秒）<input id="export-in" type="number" min="0" step="any" required></label>
+        <label>切り出し終了（秒）<input id="export-out" type="number" min="0" step="any" required></label>
+      </div>
+      <progress id="export-progress" max="1" value="0" aria-label="書き出しの進捗"></progress>
+      <p id="export-message" role="status"></p>
+      <a id="export-download" class="download-button" download hidden>動画をダウンロード</a>
+      <div class="export-actions">
+        <button id="export-cancel" type="button">閉じる</button>
+        <button id="export-start" class="primary" type="submit">書き出し開始</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./src/app.mjs"></script>
+</body>
+</html>
