@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#14171b">
   <title>FrameForge — 動画エディター</title>
   <link rel="stylesheet" href="./src/styles.css">
+  <link rel="stylesheet" href="./src/timeline.css">
 </head>
 <body>
   <header class="toolbar">
@@ -24,7 +25,7 @@
   </header>
 
   <main class="workspace">
-    <section class="panel media-panel" aria-labelledby="media-heading">
+    <section class="panel media-panel" id="media-panel" aria-labelledby="media-heading">
       <header class="panel-header">
         <h2 id="media-heading">メディア</h2>
         <button id="add-media" type="button" class="small-button">＋ 追加</button>
@@ -40,6 +41,7 @@
     <section class="panel preview-panel" aria-labelledby="preview-heading">
       <header class="panel-header">
         <h2 id="preview-heading">プレビュー</h2>
+        <label class="preview-mode"><input id="use-proxy" type="checkbox" checked> 軽量プレビュー</label>
       </header>
       <div class="viewer">
         <canvas id="preview" width="1280" height="720" aria-label="編集中の動画"></canvas>
@@ -49,13 +51,32 @@
         <input id="seek" aria-label="再生位置" type="range" min="0" max="0" value="0" step="any">
         <output id="time-readout">0:00.00 / 0:00.00</output>
       </div>
+      <div class="transport-options" role="group" aria-label="再生速度とコマ送り">
+        <button id="step-back" type="button" title="30 fps換算で約1コマ戻る" aria-label="約1コマ戻る">−1コマ</button>
+        <button id="step-forward" type="button" title="30 fps換算で約1コマ進む" aria-label="約1コマ進む">＋1コマ</button>
+        <label>速度 <select id="playback-rate">
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+          <option value="1.5">1.5×</option><option value="2">2×</option>
+        </select></label>
+      </div>
     </section>
 
     <section class="panel timeline-panel" aria-labelledby="timeline-heading">
       <header class="panel-header">
         <h2 id="timeline-heading">タイムライン</h2>
-        <button id="split" type="button" class="small-button" aria-keyshortcuts="S">再生位置で分割</button>
+        <div class="timeline-controls" role="group" aria-label="タイムライン倍率と分割">
+          <button id="split" type="button" class="small-button" aria-keyshortcuts="S">再生位置で分割</button>
+          <label>拡大 <input id="timeline-zoom" type="range" min="10" max="300" value="88"></label>
+          <button id="timeline-fit" type="button" class="small-button">全体表示</button>
+        </div>
       </header>
+      <div class="range-controls" role="group" aria-label="区間カット">
+        <button id="range-start" type="button" aria-keyshortcuts="I">開始点 I</button>
+        <button id="range-end" type="button" aria-keyshortcuts="O">終了点 O</button>
+        <output id="range-readout" aria-label="選択区間">区間未設定</output>
+        <button id="range-remove" type="button" class="danger">区間を詰めて削除</button>
+        <button id="range-clear" type="button">解除</button>
+      </div>
       <div class="timeline-body">
         <p id="timeline-empty" class="empty-state">メディアから動画を追加してください。</p>
         <div id="timeline" class="timeline" aria-label="動画クリップ"></div>
@@ -75,10 +96,15 @@
             <label>素材の終了（秒）<input id="clip-out" type="number" min="0" step="any" required></label>
           </div>
           <button type="submit">トリムを適用</button>
+          <div class="clip-actions" role="group" aria-label="再生位置を使ったトリム">
+            <button id="trim-to-in" type="button">ここから残す</button>
+            <button id="trim-to-out" type="button">ここまで残す</button>
+          </div>
           <div class="clip-actions" role="group" aria-label="クリップの順序と削除">
             <button id="clip-left" type="button">前へ</button>
             <button id="clip-right" type="button">後ろへ</button>
             <button id="clip-remove" class="danger" type="button">削除</button>
+            <button id="clip-duplicate" type="button" aria-keyshortcuts="Control+D">複製</button>
           </div>
         </form>
       </section>

@@ -519,3 +519,29 @@ dialog::backdrop {
     border-left: 0;
   }
 }
+.timeline-controls, .range-controls, .transport-options, .asset-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.timeline-controls label, .transport-options label, .preview-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.timeline-controls input { width: min(100px, 22vw); }
+.timeline-panel > .panel-header { flex-wrap: wrap; }
+.preview-mode input { margin: 0; }
+.range-controls, .transport-options { padding: 6px 10px; }
+.range-controls output { font: .78rem monospace; }
+.range-controls button, .transport-options button { font-size: .78rem; }
+.asset-row { flex-wrap: wrap; }
+.asset-row span { min-width: 0; overflow-wrap: anywhere; }
+.asset-actions button { white-space: nowrap; }
+.media-panel.drag-over { outline: 2px solid #f5bd65; outline-offset: -2px; }
+

@@ -119,7 +119,10 @@ function playClip(video, end, frameInterval, paint, signal) {
 }
 
 export async function exportVideo({ project, sources, options = {}, signal, onProgress = () => {} }) {
-  const { width = 1280, height = 720, fps = 30, format = 'auto' } = options
+  const {
+    width = 1280, height = 720, fps = 30, format = 'auto',
+    videoBitsPerSecond, audioBitsPerSecond,
+  } = options
   const extension = format === 'auto' ? getExportFormats()[0] : format
   const mimeType = supportedMimeType(extension)
   const AudioContext = globalThis.AudioContext ?? globalThis.webkitAudioContext
@@ -167,7 +170,7 @@ export async function exportVideo({ project, sources, options = {}, signal, onPr
     audioStream = destination.stream
     canvasStream = canvas.captureStream(fps)
     const stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioStream.getAudioTracks()])
-    recorder = new MediaRecorder(stream, { mimeType })
+    recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond, audioBitsPerSecond })
     const chunks = []
     recorder.addEventListener('dataavailable', event => {
       if (event.data.size) chunks.push(event.data)

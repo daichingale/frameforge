@@ -1,0 +1,242 @@
+.timeline.ff-timeline {
+  display: block;
+  width: 100%;
+  padding-bottom: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-color: #526473 #171b1f;
+}
+
+.timeline.ff-timeline::after {
+  content: none;
+}
+
+.ff-timeline-stage {
+  position: relative;
+  min-width: 100%;
+  overflow: hidden;
+  border-block: 1px solid var(--line);
+  background: #171b1e;
+  isolation: isolate;
+}
+
+.ff-timeline-ruler {
+  position: relative;
+  height: 30px;
+  overflow: hidden;
+  border-bottom: 1px solid #38474f;
+  color: var(--muted);
+  background: #20282e;
+  cursor: col-resize;
+  touch-action: pan-x pan-y;
+  user-select: none;
+}
+
+.ff-timeline-ruler:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ff-timeline-mark {
+  position: absolute;
+  bottom: 0;
+  height: 22px;
+  padding-left: 4px;
+  border-left: 1px solid #596773;
+  font: .68rem/1.25 ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ff-timeline-clips {
+  position: relative;
+  height: 58px;
+}
+
+.ff-timeline-captions {
+  position: relative;
+  min-height: 30px;
+  border-top: 1px solid #38474f;
+  background: #191e2a;
+}
+
+.ff-timeline-clip.clip-block {
+  position: absolute;
+  top: 4px;
+  height: 50px;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  touch-action: pan-y;
+}
+
+.ff-timeline-clip:focus-within {
+  z-index: 2;
+  outline: 1px solid var(--accent);
+}
+
+.ff-timeline-clip.ff-timeline-dragging {
+  z-index: 3;
+  opacity: .88;
+}
+
+.ff-timeline-clip .ff-timeline-select {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 21px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  cursor: grab;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.ff-timeline-clip .ff-timeline-select:hover,
+.ff-timeline-clip .ff-timeline-select:focus-visible {
+  background: #ffffff12;
+}
+
+.ff-timeline-dragging .ff-timeline-select {
+  cursor: grabbing;
+}
+
+.ff-timeline-clip .ff-timeline-handle {
+  position: absolute;
+  inset-block: 0;
+  width: 16px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #09151155;
+  cursor: ew-resize;
+}
+
+.ff-timeline-handle[data-edge="in"] {
+  inset-inline-start: 0;
+  border-inline-end: 1px solid #81c6b15c;
+}
+
+.ff-timeline-handle[data-edge="out"] {
+  inset-inline-end: 0;
+  border-inline-start: 1px solid #81c6b15c;
+}
+
+.ff-timeline-handle::after {
+  position: absolute;
+  inset: calc(50% - 7px) 5px;
+  border-inline: 1px solid #c9e9df;
+  content: "";
+}
+
+.ff-timeline-handle:hover, .ff-timeline-handle:focus-visible {
+  background: #548d7b;
+}
+
+.ff-timeline-narrow .ff-timeline-select {
+  padding-inline: 10px;
+}
+
+.ff-timeline-narrow .ff-timeline-handle {
+  width: 7px;
+}
+
+.ff-timeline-narrow .ff-timeline-handle::after {
+  inset-inline: 2px;
+}
+
+.ff-timeline-tiny .ff-timeline-handle {
+  width: 24%;
+}
+
+.ff-timeline-tiny .ff-timeline-handle::after {
+  display: none;
+}
+
+.ff-timeline-caption {
+  position: absolute;
+  height: 22px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 1px 4px;
+  border: 1px solid #7277b4;
+  border-radius: 3px;
+  background: #363c62;
+  color: #e7e8ff;
+  font-size: .73rem;
+  line-height: 18px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-timeline-head, .ff-timeline-range, .ff-timeline-range-point, .ff-timeline-drop {
+  position: absolute;
+  inset-block: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.ff-timeline-range {
+  background: #ffc16324;
+}
+
+.ff-timeline-range-point {
+  width: 1px;
+  border-left: 1px dashed #ffc466;
+}
+
+.ff-timeline-drop {
+  width: 3px;
+  background: var(--accent);
+}
+
+.ff-timeline-head {
+  z-index: 5;
+  width: 1px;
+  background: #ffd58c;
+}
+
+.ff-timeline-head::before {
+  position: absolute;
+  width: 9px;
+  height: 7px;
+  left: -4px;
+  background: #ffd58c;
+  clip-path: polygon(0 0, 100% 0, 100% 45%, 50% 100%, 0 45%);
+  content: "";
+}
+
+.ff-timeline-drag-time {
+  position: absolute;
+  z-index: 6;
+  top: 3px;
+  transform: translateX(-50%);
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: #10181b;
+  color: var(--accent);
+  font: .7rem ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .ff-timeline-clip:not(.ff-timeline-narrow) .ff-timeline-handle {
+    width: 21px;
+  }
+
+  .ff-timeline-ruler {
+    height: 36px;
+  }
+}

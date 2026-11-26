@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   addAsset, appendClip, createProject, locateClip, moveClip, parseProject,
-  removeCaption, removeClip, setCaption, sliceProject, splitClip, timelineDuration, trimClip,
+  removeCaption, removeClip, rippleDeleteRange, setCaption, sliceProject, splitClip,
+  timelineDuration, trimClip, trimClipToPlayhead,
 } from '../src/project.mjs';
 
 function asset(id = 'a', duration = 8) {
@@ -111,4 +112,71 @@ test('export range excludes clips ending at its start and allows short output fr
   for (const [start, end] of [[-1, 1], [1, 0], [0, 0], [0, 13], [NaN, 1], [0, Infinity]]) {
     assert.throws(() => sliceProject(project, start, end), /書き出し/);
   }
+});
+
+test('ripple delete cuts across clips and closes caption and clip gaps', () => {
+  let project = addAsset(addAsset(createProject(), asset()), asset('b', 4));
+  project = trimClip(project, project.clips[1].id, 0.5, 3.5);
+  project = setCaption(project, { id: 'before', start: 2, end: 6.5, text: 'Before' });
+  project = setCaption(project, { id: 'within', start: 7.6, end: 8.4, text: 'Within' });
+  project = setCaption(project, { id: 'overlap', start: 7, end: 9.5, text: 'Overlap' });
+  project = setCaption(project, { id: 'later', start: 9, end: 11, text: 'After' });
+
+  const edited = rippleDeleteRange(project, 7.5, 8.5);
+
+  assert.deepEqual(edited.clips, [
+    { ...project.clips[0], out: 7.5 },
+    { ...project.clips[1], in: 1 },
+  ]);
+  assert.deepEqual(edited.captions, [
+    project.captions[0],
+    { ...project.captions[2], end: 8.5 },
+    { ...project.captions[3], start: 8, end: 10 },
+  ]);
+  assert.equal(timelineDuration(edited), 10);
+  assert.equal(timelineDuration(project), 11);
+  assert.equal(edited.assets, project.assets);
+  assert.deepEqual(parseProject(JSON.stringify(edited)), edited);
+});
+
+test('ripple delete keeps exact short fragments and a distinct ID on a split clip', () => {
+  const project = addAsset(createProject(), asset());
+  const edited = rippleDeleteRange(project, 0.025, 7.975);
+
+  assert.equal(edited.clips.length, 2);
+  assert.equal(edited.clips[0].id, project.clips[0].id);
+  assert.equal(edited.clips[0].out, 0.025);
+  assert.notEqual(edited.clips[1].id, project.clips[0].id);
+  assert.equal(edited.clips[1].in, 7.975);
+  assert.deepEqual(parseProject(JSON.stringify(edited)), edited);
+});
+
+test('ripple delete accepts decimal boundaries and clears captions after a full cut', () => {
+  let project = addAsset(addAsset(createProject(), asset('a', 0.1)), asset('b', 0.2));
+  project = addAsset(project, asset('c', 0.4));
+  project = setCaption(project, { start: 1, end: 2, text: 'Future' });
+  const cut = rippleDeleteRange(project, 0, 0.3);
+
+  assert.deepEqual(cut.clips, [project.clips[2]]);
+  const empty = rippleDeleteRange(project, 0, timelineDuration(project));
+  assert.deepEqual(empty.clips, []);
+  assert.deepEqual(empty.captions, []);
+  assert.equal(empty.assets, project.assets);
+  for (const [start, end] of [[-1, 1], [1, 0], [0, 0], [0, 1], [NaN, 1], [0, Infinity]]) {
+    assert.throws(() => rippleDeleteRange(project, start, end));
+  }
+});
+
+test('trim to playhead maps a timeline position to the selected source coordinates', () => {
+  const project = addAsset(addAsset(createProject(), asset()), asset('b', 4));
+  const clipId = project.clips[1].id;
+  const trimmed = trimClip(project, clipId, 0.5, 3.5);
+  const toStart = trimClipToPlayhead(trimmed, clipId, 9, 'in');
+  const toEnd = trimClipToPlayhead(trimmed, clipId, 9, 'out');
+
+  assert.deepEqual(toStart.clips[1], { ...trimmed.clips[1], in: 1.5 });
+  assert.deepEqual(toEnd.clips[1], { ...trimmed.clips[1], out: 1.5 });
+  assert.throws(() => trimClipToPlayhead(trimmed, clipId, 7, 'in'));
+  assert.throws(() => trimClipToPlayhead(trimmed, clipId, 8, 'out'));
+  assert.throws(() => trimClipToPlayhead(trimmed, clipId, 9, 'center'));
 });

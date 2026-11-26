@@ -33,12 +33,17 @@ function validateClip(clip, asset) {
       || start < 0 || end > asset.duration || end <= start) {
     throw new Error('クリップの開始・終了を素材の範囲内で指定してください。');
   }
+  return { id, assetId, in: start, out: end };
+}
+
+function validateClipEdit(clip, asset) {
+  const validated = validateClip(clip, asset);
   const minimum = Math.min(MIN_CLIP_DURATION, asset.duration);
   const tolerance = Math.min(TIME_TOLERANCE, minimum * 1e-6);
-  if (end - start < minimum - tolerance) {
+  if (validated.out - validated.in < minimum - tolerance) {
     throw new Error('クリップの長さは0.05秒以上にしてください。');
   }
-  return { id, assetId, in: start, out: end };
+  return validated;
 }
 
 function validateCaption(caption) {
@@ -79,7 +84,7 @@ export function timelineDuration(project) {
   return project.clips.reduce((sum, clip) => sum + (clip.out - clip.in), 0);
 }
 
-// Export ranges may contain fragments shorter than the minimum editable clip duration.
+// A range can keep a fragment below the minimum for manual split and trim.
 export function sliceProject(project, start, end) {
   if (!Number.isFinite(start) || !Number.isFinite(end)
       || start < 0 || end <= start || end > timelineDuration(project)) {
@@ -108,6 +113,53 @@ export function sliceProject(project, start, end) {
       start: Math.max(caption.start, start) - start,
       end: Math.min(caption.end, end) - start,
     }));
+  return { ...project, clips, captions };
+}
+
+function boundaryTolerance(time) {
+  return Number.EPSILON * Math.max(Math.abs(time), 1) * 4;
+}
+
+export function rippleDeleteRange(project, start, end) {
+  const duration = timelineDuration(project);
+  if (!Number.isFinite(start) || !Number.isFinite(end)
+      || start < 0 || end <= start || start >= duration || end - duration > boundaryTolerance(duration)) {
+    throw new Error('削除の開始・終了をタイムラインの範囲内で指定してください。');
+  }
+  const rangeEnd = Math.min(end, duration);
+  const clips = [];
+  let clipStart = 0;
+
+  for (const clip of project.clips) {
+    const clipEnd = clipStart + (clip.out - clip.in);
+    const tolerance = Math.min(boundaryTolerance(clipEnd), (clip.out - clip.in) / 2);
+    if (clipEnd - start <= tolerance || rangeEnd - clipStart <= tolerance) {
+      clips.push(clip);
+    } else {
+      const leftOut = clip.in + (start - clipStart);
+      const rightIn = clip.in + (rangeEnd - clipStart);
+      const keepLeft = start - clipStart > tolerance && leftOut > clip.in;
+      if (keepLeft) clips.push({ ...clip, out: leftOut });
+      if (clipEnd - rangeEnd > tolerance && rightIn < clip.out) {
+        clips.push({
+          ...clip,
+          id: keepLeft ? crypto.randomUUID() : clip.id,
+          in: rightIn,
+        });
+      }
+    }
+    clipStart = clipEnd;
+  }
+
+  const shift = time => {
+    if (time <= start) return time;
+    if (time <= rangeEnd) return start;
+    return start + (time - rangeEnd);
+  };
+  const captions = clips.length === 0 ? [] : project.captions
+    .map(caption => ({ ...caption, start: shift(caption.start), end: shift(caption.end) }))
+    .filter(caption => caption.end > caption.start);
+
   return { ...project, clips, captions };
 }
 
@@ -165,8 +217,8 @@ export function splitClip(project, time) {
   }
   const { clip, index, sourceTime } = position;
   const asset = findAsset(project, clip.assetId);
-  const left = validateClip({ ...clip, out: sourceTime }, asset);
-  const right = validateClip({ ...clip, id: crypto.randomUUID(), in: sourceTime }, asset);
+  const left = validateClipEdit({ ...clip, out: sourceTime }, asset);
+  const right = validateClipEdit({ ...clip, id: crypto.randomUUID(), in: sourceTime }, asset);
   return { ...project, clips: project.clips.toSpliced(index, 1, left, right) };
 }
 
@@ -174,10 +226,24 @@ export function trimClip(project, clipId, inPoint, outPoint) {
   const index = findClipIndex(project, clipId);
   const clip = project.clips[index];
   const asset = findAsset(project, clip.assetId);
-  const trimmed = validateClip({ ...clip, in: inPoint, out: outPoint }, asset);
+  const trimmed = validateClipEdit({ ...clip, in: inPoint, out: outPoint }, asset);
   const nextProject = { ...project, clips: project.clips.toSpliced(index, 1, trimmed) };
   if (!Number.isFinite(timelineDuration(nextProject))) throw new Error('タイムラインが長すぎます。');
   return nextProject;
+}
+
+export function trimClipToPlayhead(project, clipId, time, edge) {
+  if (edge !== 'in' && edge !== 'out') {
+    throw new Error('クリップの開始または終了を指定してください。');
+  }
+  const position = locateClip(project, time);
+  if (!position || position.clip.id !== clipId || time <= position.start || time >= position.end) {
+    throw new Error('選択したクリップの途中に再生位置を合わせてください。');
+  }
+  const {clip, sourceTime} = position;
+  return edge === 'in'
+    ? trimClip(project, clipId, sourceTime, clip.out)
+    : trimClip(project, clipId, clip.in, sourceTime);
 }
 
 export function removeClip(project, clipId) {

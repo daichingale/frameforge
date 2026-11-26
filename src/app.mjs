@@ -1,13 +1,17 @@
 import {
   addAsset, appendClip, createProject, locateClip, moveClip, parseProject,
-  removeCaption, removeClip, setCaption, sliceProject, splitClip, timelineDuration, trimClip,
+  removeCaption, removeClip, rippleDeleteRange, setCaption, sliceProject, splitClip,
+  timelineDuration, trimClip, trimClipToPlayhead,
 } from './project.mjs';
 import {captionAt, drawFrame} from './render.mjs';
 import {cueVideo, inspectMedia} from './media.mjs';
 import {exportVideo, getExportFormats} from './export.mjs';
+import {createPreviewProxy, inspectPreviewMedia, isLightPreviewSource} from './proxy.mjs';
+import {mountTimeline} from './timeline.mjs';
 
 const $ = id => document.getElementById(id);
 const sources = new Map();
+const proxies = new Map();
 const past = [];
 const future = [];
 const video = document.createElement('video');
@@ -25,6 +29,10 @@ let playing = false;
 let mediaBusy = false;
 let exportTask = null;
 let downloadUrl = null;
+let proxyTask = null;
+let rangeStart = null;
+let rangeEnd = null;
+const EDIT_STEP = 1 / 30;
 
 const findAsset = id => project.assets.find(asset => asset.id === id);
 const notify = message => { $('status').textContent = message; };
@@ -45,6 +53,26 @@ function button(label, className, action) {
   return element;
 }
 
+const timeline = mountTimeline({
+  element: $('timeline'),
+  onSelect: id => {
+    selectedId = id;
+    timeline.setSelection(id);
+    renderInspector();
+  },
+  onSeek: seekTo,
+  onTrim: (id, start, end) => edit(() => {
+    selectedId = id;
+    return trimClip(project, id, start, end);
+  }),
+  onMove: (id, target) => edit(() => {
+    selectedId = id;
+    const index = project.clips.findIndex(clip => clip.id === id);
+    return moveClip(project, id, target - index);
+  }),
+  onCaptionSelect: selectCaption,
+});
+
 function setPlaying(value) {
   playing = value;
   $('play-pause').textContent = value ? '⏸ 一時停止' : '▶ 再生';
@@ -56,9 +84,13 @@ function showTime() {
   const seek = $('seek');
   seek.value = String(currentTime);
   $('time-readout').textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
-  $('timeline').style.setProperty('--playhead', `${duration ? currentTime / duration * 100 : 0}%`);
+  timeline.setTime(currentTime);
   const location = locateClip(project, currentTime);
-  $('split').disabled = !location || currentTime <= location.start || currentTime >= location.end;
+  const canSplit = location && Math.min(currentTime - location.start, location.end - currentTime) >= 0.05 - 1e-9;
+  $('split').disabled = !canSplit || mediaBusy;
+  const picked = location?.clip.id === selectedId && location;
+  $('trim-to-in').disabled = !picked || !(currentTime > picked.start && picked.end - currentTime >= 0.05 - 1e-9);
+  $('trim-to-out').disabled = !picked || !(currentTime < picked.end && currentTime - picked.start >= 0.05 - 1e-9);
 }
 
 function paint(frame = null) {
@@ -81,6 +113,7 @@ async function preview(autoplay = false) {
   let position = locateClip(project, currentTime);
   if (!position) {
     paint();
+    playback = null;
     return;
   }
   if (autoplay) setPlaying(true);
@@ -93,10 +126,21 @@ async function preview(autoplay = false) {
         if (autoplay) notify(`「${findAsset(position.clip.assetId).name}」を再リンクしてください。`);
         break;
       }
-      await cueVideo(video, url, position.sourceTime, signal);
+      const proxy = autoplay && $('use-proxy').checked && proxies.get(position.clip.assetId);
+      if (proxy) {
+        try {
+          await cueVideo(video, proxy, position.sourceTime, signal);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          await cueVideo(video, url, position.sourceTime, signal);
+        }
+      } else {
+        await cueVideo(video, url, position.sourceTime, signal);
+      }
       signal.throwIfAborted();
       paint(video);
       if (!autoplay) break;
+      video.playbackRate = Number($('playback-rate').value);
       await video.play();
       signal.throwIfAborted();
       await new Promise(resolve => {
@@ -133,11 +177,27 @@ async function preview(autoplay = false) {
   }
 }
 
-function selectClip(id, time = currentTime) {
-  selectedId = id;
-  currentTime = time;
-  render();
+function seekTo(time) {
+  currentTime = Math.min(timelineDuration(project), Math.max(0, time));
+  showTime();
   void preview();
+}
+
+function showRange() {
+  const current = time => time === null ? '—' : formatTime(time);
+  $('range-readout').textContent = rangeStart === null && rangeEnd === null
+    ? '区間未設定' : `${current(rangeStart)} → ${current(rangeEnd)}`;
+  $('range-start').disabled = mediaBusy || project.clips.length === 0;
+  $('range-end').disabled = mediaBusy || project.clips.length === 0;
+  $('range-remove').disabled = mediaBusy || rangeStart === null || rangeEnd === null || rangeStart >= rangeEnd;
+  $('range-clear').disabled = rangeStart === null && rangeEnd === null;
+  timeline.setRange(rangeStart, rangeEnd);
+}
+
+function clearRange() {
+  rangeStart = null;
+  rangeEnd = null;
+  showRange();
 }
 
 function resetCaption() {
@@ -147,42 +207,18 @@ function resetCaption() {
   $('caption-end').value = round(currentTime + 2);
 }
 
-function render() {
-  const duration = timelineDuration(project);
-  const assets = $('asset-list');
-  assets.replaceChildren();
-  for (const asset of project.assets) {
-    const row = document.createElement('div');
-    const linked = sources.has(asset.id);
-    row.className = linked ? 'asset-row' : 'asset-row missing';
-    const label = document.createElement('span');
-    label.textContent = `${asset.name} · ${formatTime(asset.duration)}${linked ? '' : ' · 未リンク'}`;
-    const add = button('+', 'asset-add', () => edit(() => appendClip(project, asset.id)));
-    add.setAttribute('aria-label', `${asset.name} をタイムラインに追加`);
-    row.append(label, add);
-    assets.append(row);
-  }
-  if (project.assets.length === 0) assets.textContent = '動画素材を追加してください';
+function selectCaption(id) {
+  const caption = project.captions.find(item => item.id === id);
+  if (!caption) return;
+  captionId = id;
+  $('caption-start').value = caption.start;
+  $('caption-end').value = caption.end;
+  $('caption-text').value = caption.text;
+  $('caption-text').focus({preventScroll: true});
+  seekTo(caption.start);
+}
 
-  const timeline = $('timeline');
-  timeline.replaceChildren();
-  let offset = 0;
-  for (const clip of project.clips) {
-    const start = offset;
-    const clipDuration = clip.out - clip.in;
-    const asset = findAsset(clip.assetId);
-    const block = button(asset.name, 'clip-block', () => selectClip(clip.id, start));
-    block.classList.toggle('selected', clip.id === selectedId);
-    block.classList.toggle('missing', !sources.has(clip.assetId));
-    block.setAttribute('aria-pressed', String(clip.id === selectedId));
-    block.style.flexGrow = String(clipDuration);
-    block.title = `${asset.name} · ${formatTime(clipDuration)}`;
-    timeline.append(block);
-    offset += clipDuration;
-  }
-  $('timeline-empty').hidden = project.clips.length > 0;
-  timeline.hidden = project.clips.length === 0;
-
+function renderInspector() {
   const index = project.clips.findIndex(clip => clip.id === selectedId);
   const clip = project.clips[index];
   $('selection-empty').hidden = Boolean(clip);
@@ -197,21 +233,48 @@ function render() {
     $('clip-left').disabled = index === 0;
     $('clip-right').disabled = index === project.clips.length - 1;
   }
+  showTime();
+}
+
+function render() {
+  const duration = timelineDuration(project);
+  const assets = $('asset-list');
+  assets.replaceChildren();
+  for (const asset of project.assets) {
+    const row = document.createElement('div');
+    const linked = sources.has(asset.id);
+    row.className = linked ? 'asset-row' : 'asset-row missing';
+    const label = document.createElement('span');
+    label.textContent = `${asset.name} · ${formatTime(asset.duration)}${linked ? '' : ' · 未リンク'}`;
+    const add = button('+', 'asset-add', () => edit(() => appendClip(project, asset.id)));
+    add.setAttribute('aria-label', `${asset.name} をタイムラインに追加`);
+    const actions = document.createElement('div');
+    actions.className = 'asset-actions';
+    actions.append(add);
+    if (linked) {
+      const active = proxyTask?.assetId === asset.id;
+      const proxyReady = proxies.has(asset.id);
+      const proxyButton = button(active ? '軽量化を中止' : proxyReady ? '軽量版を解除' : '軽量化', '', () => manageProxy(asset));
+      proxyButton.disabled = (Boolean(proxyTask) && !active) || mediaBusy;
+      proxyButton.setAttribute('aria-label', `${asset.name} の${proxyButton.textContent}`);
+      actions.append(proxyButton);
+    }
+    row.append(label, actions);
+    assets.append(row);
+  }
+  if (project.assets.length === 0) assets.textContent = '動画素材を追加してください';
+
+  $('timeline-empty').hidden = project.clips.length > 0;
+  $('timeline').hidden = project.clips.length === 0;
+  timeline.render({project, selectedId, sources});
+  renderInspector();
 
   const captions = $('caption-list');
   captions.replaceChildren();
   for (const caption of [...project.captions].sort((a, b) => a.start - b.start)) {
     const row = document.createElement('div');
     row.className = 'caption-row';
-    const jump = button(`${formatTime(caption.start)} · ${caption.text}`, '', () => {
-      captionId = caption.id;
-      $('caption-start').value = caption.start;
-      $('caption-end').value = caption.end;
-      $('caption-text').value = caption.text;
-      currentTime = Math.min(duration, caption.start);
-      $('caption-text').focus();
-      void preview();
-    });
+    const jump = button(`${formatTime(caption.start)} · ${caption.text}`, '', () => selectCaption(caption.id));
     const remove = button('削除', '', () => edit(() => {
       if (captionId === caption.id) resetCaption();
       return removeCaption(project, caption.id);
@@ -224,12 +287,17 @@ function render() {
   $('seek').max = String(duration);
   $('seek').disabled = !duration;
   $('play-pause').disabled = !duration;
+  $('step-back').disabled = !duration;
+  $('step-forward').disabled = !duration;
+  $('timeline-zoom').disabled = !duration;
+  $('timeline-fit').disabled = !duration;
   $('undo').disabled = !past.length || mediaBusy;
   $('redo').disabled = !future.length || mediaBusy;
   $('add-media').disabled = mediaBusy;
   $('relink-media').disabled = mediaBusy || !project.assets.some(asset => !sources.has(asset.id));
   $('open-project').disabled = mediaBusy;
-  $('export-open').disabled = !duration || mediaBusy;
+  $('export-open').disabled = !duration || mediaBusy || Boolean(proxyTask);
+  showRange();
   showTime();
 }
 
@@ -238,7 +306,9 @@ function commit(next) {
   past.push(project);
   if (past.length > 100) past.shift();
   future.length = 0;
+  if (next.clips !== project.clips) clearRange();
   project = next;
+  if (!project.clips.some(clip => clip.id === selectedId)) selectedId = null;
   currentTime = Math.min(currentTime, timelineDuration(project));
   render();
   void preview();
@@ -257,30 +327,89 @@ function restore(from, to) {
   if (mediaBusy || from.length === 0) return;
   to.push(project);
   project = from.pop();
+  if (!project.clips.some(clip => clip.id === selectedId)) selectedId = null;
+  clearRange();
   currentTime = Math.min(currentTime, timelineDuration(project));
   resetCaption();
   render();
   void preview();
 }
 
+async function runMediaJob(files, handler) {
+  if (!files.length || mediaBusy) return;
+  mediaBusy = true;
+  stopPlayback();
+  render();
+  try {
+    await handler(files);
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    mediaBusy = false;
+    render();
+    void preview();
+  }
+}
+
 function readFiles(id, handler) {
-  $(id).addEventListener('change', async event => {
+  $(id).addEventListener('change', event => {
     const files = Array.from(event.target.files);
     event.target.value = '';
-    if (!files.length || mediaBusy) return;
-    mediaBusy = true;
-    stopPlayback();
-    render();
-    try {
-      await handler(files);
-    } catch (error) {
-      notify(error.message);
-    } finally {
-      mediaBusy = false;
-      render();
-      void preview();
-    }
+    void runMediaJob(files, handler);
   });
+}
+
+async function manageProxy(asset) {
+  if (proxyTask?.assetId === asset.id) {
+    proxyTask.controller.abort();
+    return;
+  }
+  if (proxyTask || mediaBusy) return;
+  const previous = proxies.get(asset.id);
+  if (previous) {
+    const wasPlaying = playing;
+    stopPlayback();
+    proxies.delete(asset.id);
+    URL.revokeObjectURL(previous);
+    render();
+    void preview(wasPlaying);
+    return;
+  }
+  const controller = new AbortController();
+  const {signal} = controller;
+  proxyTask = {assetId: asset.id, controller};
+  const url = sources.get(asset.id);
+  stopPlayback();
+  render();
+  notify(`「${asset.name}」の軽量プレビューを作成中です。`);
+  try {
+    const source = await inspectPreviewMedia(url, signal);
+    if (isLightPreviewSource(source, asset.size)) {
+      notify(`「${asset.name}」はすでに軽いため、そのまま再生します。`);
+      return;
+    }
+    let lastProgress = -1;
+    const blob = await createPreviewProxy(url, {source, signal, onProgress: progress => {
+      const percent = Math.floor(progress * 10) * 10;
+      if (percent === lastProgress) return;
+      lastProgress = percent;
+      notify(`「${asset.name}」を軽量化中 · ${percent}%`);
+    }});
+    signal.throwIfAborted();
+    if (blob.size >= asset.size) {
+      notify(`「${asset.name}」は圧縮後の方が大きいため、元動画を使います。`);
+      return;
+    }
+    proxies.set(asset.id, URL.createObjectURL(blob));
+    const original = (asset.size / 1024 / 1024).toFixed(2);
+    const reduced = (blob.size / 1024 / 1024).toFixed(2);
+    notify(`「${asset.name}」の軽量プレビューを作成しました（${original} MB → ${reduced} MB）。`);
+  } catch (error) {
+    notify(signal.aborted ? '軽量化を中止しました。' : error.message);
+  } finally {
+    proxyTask = null;
+    render();
+  }
 }
 
 async function importMedia(files, relink) {
@@ -319,20 +448,39 @@ $('open-project').onclick = () => $('project-input').click();
 $('relink-media').onclick = () => $('relink-input').click();
 readFiles('media-input', files => importMedia(files, false));
 readFiles('relink-input', files => importMedia(files, true));
+const mediaPanel = $('media-panel');
+mediaPanel.addEventListener('dragover', event => {
+  if (!event.dataTransfer.types.includes('Files')) return;
+  event.preventDefault();
+  if (!mediaBusy) mediaPanel.classList.add('drag-over');
+});
+mediaPanel.addEventListener('dragleave', event => {
+  if (!mediaPanel.contains(event.relatedTarget)) mediaPanel.classList.remove('drag-over');
+});
+mediaPanel.addEventListener('drop', event => {
+  if (!event.dataTransfer.types.includes('Files')) return;
+  event.preventDefault();
+  mediaPanel.classList.remove('drag-over');
+  void runMediaJob(Array.from(event.dataTransfer.files), files => importMedia(files, false));
+});
 readFiles('project-input', async ([file]) => {
   const opened = parseProject(await file.text());
+  proxyTask?.controller.abort();
   for (const [id, url] of sources) {
     const oldAsset = findAsset(id);
     const newAsset = opened.assets.find(asset => asset.id === id);
     if (newAsset && oldAsset && ['name', 'size', 'lastModified', 'duration'].every(key => oldAsset[key] === newAsset[key])) continue;
     URL.revokeObjectURL(url);
     sources.delete(id);
+    if (proxies.has(id)) URL.revokeObjectURL(proxies.get(id));
+    proxies.delete(id);
   }
   project = opened;
   past.length = 0;
   future.length = 0;
   selectedId = null;
   currentTime = 0;
+  clearRange();
   resetCaption();
   notify(opened.assets.some(asset => !sources.has(asset.id))
     ? 'プロジェクトを開きました。元の動画を「素材を再リンク」から選んでください。'
@@ -355,7 +503,7 @@ function togglePlayback() {
   const duration = timelineDuration(project);
   if (!duration) return;
   if (playing) {
-    stopPlayback();
+    void preview();
     return;
   }
   if (currentTime >= duration) currentTime = 0;
@@ -363,12 +511,36 @@ function togglePlayback() {
 }
 
 $('play-pause').onclick = togglePlayback;
-$('seek').oninput = event => {
-  currentTime = Number(event.target.value);
-  showTime();
-  void preview();
+$('seek').oninput = event => seekTo(Number(event.target.value));
+$('step-back').onclick = () => seekTo(currentTime - EDIT_STEP);
+$('step-forward').onclick = () => seekTo(currentTime + EDIT_STEP);
+$('playback-rate').onchange = () => { video.playbackRate = Number($('playback-rate').value); };
+$('use-proxy').onchange = () => { if (playing) void preview(true); };
+$('timeline-zoom').oninput = event => timeline.setZoom(Number(event.target.value));
+$('timeline-fit').onclick = () => {
+  const zoom = timeline.fit();
+  if (Number.isFinite(zoom)) $('timeline-zoom').value = zoom;
 };
 $('split').onclick = () => edit(() => splitClip(project, currentTime));
+$('range-start').onclick = () => {
+  rangeStart = currentTime;
+  if (rangeEnd !== null && rangeEnd <= rangeStart) rangeEnd = null;
+  showRange();
+};
+$('range-end').onclick = () => {
+  rangeEnd = currentTime;
+  if (rangeStart !== null && rangeStart >= rangeEnd) rangeStart = null;
+  showRange();
+};
+$('range-clear').onclick = clearRange;
+$('range-remove').onclick = () => edit(() => {
+  if (rangeStart === null || rangeEnd === null) return project;
+  const cutStart = rangeStart;
+  const next = rippleDeleteRange(project, cutStart, rangeEnd);
+  currentTime = cutStart;
+  resetCaption();
+  return next;
+});
 $('clip-inspector').onsubmit = event => {
   event.preventDefault();
   edit(() => trimClip(project, selectedId, $('clip-in').valueAsNumber, $('clip-out').valueAsNumber));
@@ -376,6 +548,15 @@ $('clip-inspector').onsubmit = event => {
 $('clip-left').onclick = () => edit(() => moveClip(project, selectedId, -1));
 $('clip-right').onclick = () => edit(() => moveClip(project, selectedId, 1));
 $('clip-remove').onclick = () => edit(() => removeClip(project, selectedId));
+$('trim-to-in').onclick = () => edit(() => trimClipToPlayhead(project, selectedId, currentTime, 'in'));
+$('trim-to-out').onclick = () => edit(() => trimClipToPlayhead(project, selectedId, currentTime, 'out'));
+$('clip-duplicate').onclick = () => edit(() => {
+  const index = project.clips.findIndex(clip => clip.id === selectedId);
+  if (index === -1) return project;
+  const copy = {...project.clips[index], id: crypto.randomUUID()};
+  selectedId = copy.id;
+  return {...project, clips: project.clips.toSpliced(index + 1, 0, copy)};
+});
 $('caption-form').onsubmit = event => {
   event.preventDefault();
   edit(() => {
@@ -409,8 +590,9 @@ $('export-open').onclick = () => {
   stopPlayback();
   clearDownload();
   const duration = timelineDuration(project);
-  $('export-in').value = 0;
-  $('export-out').value = duration;
+  const rangeComplete = rangeStart !== null && rangeEnd !== null && rangeStart < rangeEnd;
+  $('export-in').value = rangeComplete ? rangeStart : 0;
+  $('export-out').value = rangeComplete ? rangeEnd : duration;
   $('export-in').max = duration;
   $('export-out').max = duration;
   $('export-start').disabled = !availableFormats.length;
@@ -464,18 +646,32 @@ $('export-cancel').onclick = closeExport;
 dialog.addEventListener('cancel', closeExport);
 
 document.addEventListener('keydown', event => {
-  if (dialog.open || event.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (dialog.open) return;
   const key = event.key.toLowerCase();
-  if ((event.ctrlKey || event.metaKey) && (key === 'z' || key === 'y')) {
+  const modifier = event.ctrlKey || event.metaKey;
+  if (modifier && key === 's') {
+    event.preventDefault();
+    $('save-project').click();
+    return;
+  }
+  if (event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (modifier && (key === 'z' || key === 'y')) {
     event.preventDefault();
     if (key === 'y' || event.shiftKey) restore(future, past);
     else restore(past, future);
-  } else if (!event.ctrlKey && !event.metaKey && key === 's' && !$('split').disabled) {
+  } else if (modifier && key === 'd' && selectedId) {
     event.preventDefault();
-    $('split').click();
-  } else if (event.code === 'Space' && event.target === document.body) {
-    event.preventDefault();
-    togglePlayback();
+    $('clip-duplicate').click();
+  } else if (!modifier && !event.altKey) {
+    const shortcut = {s: 'split', i: 'range-start', o: 'range-end', delete: 'clip-remove'};
+    const action = shortcut[key];
+    if (action && (action !== 'clip-remove' || project.clips.some(clip => clip.id === selectedId))) {
+      event.preventDefault();
+      $(action).click();
+    } else if (event.code === 'Space' && event.target === document.body) {
+      event.preventDefault();
+      togglePlayback();
+    }
   }
 });
 
