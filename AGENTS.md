@@ -1,0 +1,3 @@
+# FrameForge development contract
+
+Windows-first, offline-first video editor. Rust core, Tauri desktop shell, React/TypeScript UI, FFmpeg media backend. Keep UI independent of rendering. Use integer rational timestamps, non-destructive edits, versioned project schema and reversible commands. Never commit media, student data, tokens or local paths. Validate export paths and subprocess arguments; no shell interpolation. Document tests actually run and limitations in PROGRESS.md. Start with core timeline tests before implementing UI. Remote development via GitHub; GPU validation on Windows hardware. Public repository contains source only.
